@@ -9,9 +9,11 @@ matches the claims.
 what was reused, what was changed, and the raw-password weakness Parley must not
 inherit.
 
-> Status: **scaffold + design only.** The backend has a health endpoint, the
-> frontend has a blank page, and the protocol in `docs/PROTOCOL.md` is not
-> implemented yet. Nothing here is audited or production-ready.
+> Status: **backend MVP; no frontend yet.** The backend implements
+> registration/login, refresh rotation, the public-key directory, and opaque
+> message storage per `docs/PROTOCOL.md`. The frontend is still a blank page and
+> the client-side encryption protocol is not implemented. Nothing here is
+> audited or production-ready.
 
 ## What it is
 

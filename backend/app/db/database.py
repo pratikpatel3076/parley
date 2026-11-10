@@ -9,7 +9,8 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
-engine = create_async_engine(settings.DATABASE_URL, echo=settings.DEBUG)
+# Never echo SQL: bound parameters can contain auth material and ciphertext.
+engine = create_async_engine(settings.DATABASE_URL, echo=False)
 SessionLocal = async_sessionmaker(
     engine,
     class_=AsyncSession,
@@ -18,7 +19,7 @@ SessionLocal = async_sessionmaker(
 
 
 class Base(DeclarativeBase):
-    """Declarative base for future ORM models."""
+    """Declarative base for the Parley ORM models."""
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -37,5 +38,8 @@ async def init_db() -> None:
     This is a scaffold convenience. Add reviewed migrations before the first
     schema change; do not grow this into a migration strategy.
     """
+    # Importing the package registers the model classes on Base.metadata.
+    import app.models  # noqa: F401
+
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)

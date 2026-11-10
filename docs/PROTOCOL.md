@@ -1,8 +1,10 @@
 # Parley Protocol (MVP)
 
-Status: specified design. The repository is a scaffold; none of the endpoints
-below are implemented yet. This document is the contract the implementation must
-satisfy. Security claims and limits are in [THREAT_MODEL.md](THREAT_MODEL.md).
+Status: the backend MVP implements the server side of sections 3.2, 5, 6.1,
+8.2-8.5, and 9, with the deviations listed in section 16. The frontend and the
+client-side flows (sections 3.1, 4, 6, 7, and 8.1) are still specified design,
+not implemented. This document is the contract the implementation must satisfy.
+Security claims and limits are in [THREAT_MODEL.md](THREAT_MODEL.md).
 
 Protocol version: `1`.
 
@@ -243,13 +245,15 @@ After a successful login the client:
 ### 5.3 Cookies and tokens
 
 - Access token: JWT HS256 signed with the server `SECRET_KEY`, 15-minute
-  lifetime, claims include `sub` (user id), `typ: "access"`, `iat`, and `exp`.
+  lifetime, claims include `sub` (user id), `sid` (session id), `typ: "access"`,
+  `iat`, and `exp`. Every authenticated request checks that the session still
+  exists and is neither revoked nor expired.
 - Refresh token: 32 random bytes, 30-day lifetime, stored server-side only as
   SHA-256(token).
 - Cookie names: `parley_access` and `parley_refresh`.
 - Flags: `HttpOnly`, `SameSite=Lax`, `Path=/` for access, and
-  `Path=/api/v1/auth` for refresh. `Secure` is required in production and is
-  configurable for local HTTP development.
+  `Path=/api/v1/auth` for refresh. `Secure` is required in production; it may be
+  disabled only when `DEBUG=True` for local HTTP development.
 - The API accepts only cookies, not an `Authorization: Bearer` header, to keep
   the token surface small.
 - **Origin check for state-changing requests.** Every `POST`, `PUT`, `PATCH`, and
@@ -569,7 +573,9 @@ Operational requirements:
 - Rate-limit registration and login. The MVP limiter is an in-process counter:
   it is per worker and resets on restart, so a multi-worker deployment needs a
   shared store. Key lookups, sends, and polls still need limits.
-- Enforce a maximum request body size at the proxy and application layers.
+- Enforce a maximum HTTP request body size at the proxy. The application
+  independently caps decoded ciphertext at 64 KiB and returns validation errors
+  without echoing the submitted values.
 - Back up the database securely; backups contain ciphertext and metadata, not
   plaintext.
 - Run as an unprivileged user if containerized; use a secret manager for
@@ -663,3 +669,36 @@ Before claiming the design works:
 - Reviewed database migrations.
 - A locally re-wrapped private key plus new `authSecret` for password changes,
   as one atomic client-driven operation.
+
+## 16. Backend implementation deviations
+
+The backend MVP forced these deviations from, or clarifications of, the design
+above. They are explicit because the code must not claim more than it does.
+
+- **SQLite development schema.** The development database stores UUIDs as
+  `TEXT(36)`, binary values as `BLOB`, and timestamps as naive UTC `DATETIME`
+  rather than the `uuid`, `bytea`, and `timestamptz` types shown in section 10.
+  Those types remain the target for a PostgreSQL deployment.
+- **Schema creation, not migrations.** Tables are created with
+  `Base.metadata.create_all` at startup. Migrations are deferred; this is not a
+  production migration strategy.
+- **HTTP status codes.** FastAPI returns `422` for schema/validation failures
+  where the design text says `400`. Authentication failures remain `401`, and
+  authorization or Origin failures remain `403`.
+- **Opaque cursor, fixed page size.** Pagination uses an opaque base64url cursor
+  over `(created_at, id)` and always returns at most 100 rows. There is no `seq`
+  column, no `client_message_id` idempotency key, and no `limit` query
+  parameter. A retried send can therefore create a duplicate row; the client
+  deduplicates by message id.
+- **No `auth_salt`, `kdf_version`, or `/auth/params`.** The auth salt is the
+  public username-derived value in section 2, so there is nothing to fetch or
+  store. There is also no `/auth/me`; callers use the user object returned by
+  register/login and the public-key endpoint.
+- **In-process rate limiter.** Registration and login limits live in one worker
+  process, reset on restart, and are not shared across processes. This matches
+  the design note in section 10 and is not a distributed guarantee.
+- **Refresh reuse handling.** Refresh rotation marks the old session revoked and
+  creates a new row. Presenting a revoked refresh token revokes every session for
+  that user before returning `401`, as a theft signal.
+- **Timestamps.** `client_ts` is normalized to UTC when stored; message ordering
+  uses the server's `created_at`, never `client_ts`.

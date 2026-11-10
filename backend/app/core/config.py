@@ -1,7 +1,6 @@
 from functools import lru_cache
-from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,7 +33,10 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:5173"]
     )
     COOKIE_SECURE: bool = True
-    COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+
+    AUTH_RATE_LIMIT_ATTEMPTS: int = 10
+    AUTH_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    MAX_CIPHERTEXT_BYTES: int = 65_536
 
     @field_validator("SECRET_KEY")
     @classmethod
@@ -61,6 +63,30 @@ class Settings(BaseSettings):
         if not value.strip():
             raise ValueError("DATABASE_URL must be a non-empty connection string.")
         return value
+
+    @field_validator("ALLOWED_ORIGINS")
+    @classmethod
+    def validate_allowed_origins(cls, value: list[str]) -> list[str]:
+        if any("*" in origin for origin in value):
+            raise ValueError("ALLOWED_ORIGINS must not contain wildcards.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_security_settings(self) -> "Settings":
+        if not self.DEBUG and not self.COOKIE_SECURE:
+            raise ValueError(
+                "COOKIE_SECURE may be disabled only when DEBUG=True. "
+                "Set COOKIE_SECURE=True outside local development."
+            )
+        if not self.ALLOWED_ORIGINS:
+            raise ValueError("ALLOWED_ORIGINS must contain at least one origin.")
+        if self.AUTH_RATE_LIMIT_ATTEMPTS < 1:
+            raise ValueError("AUTH_RATE_LIMIT_ATTEMPTS must be at least 1.")
+        if self.AUTH_RATE_LIMIT_WINDOW_SECONDS < 1:
+            raise ValueError("AUTH_RATE_LIMIT_WINDOW_SECONDS must be at least 1.")
+        if self.MAX_CIPHERTEXT_BYTES < 1:
+            raise ValueError("MAX_CIPHERTEXT_BYTES must be at least 1.")
+        return self
 
 
 @lru_cache

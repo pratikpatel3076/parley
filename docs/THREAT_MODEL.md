@@ -1,7 +1,8 @@
 # Parley Threat Model
 
 Status: design document for the protocol in [PROTOCOL.md](PROTOCOL.md). The
-repository currently contains a scaffold, not a working messenger. This model
+backend MVP implements the server side, but the frontend and client-side crypto
+are not implemented, so the repository is not a working messenger. This model
 describes the intended design and its limits; it is not a claim that the code
 has been audited.
 
