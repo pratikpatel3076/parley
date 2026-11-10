@@ -377,13 +377,14 @@ tampered client.
    ```
    `crypto_box_easy` returns the 16-byte authenticator followed by the
    ciphertext.
-5. Persist the sent record locally with the recipient public key used, nonce,
-   ciphertext, id, and timestamp.
+5. Generate one UUIDv4 `client_message_id` per logical message and persist it
+   with the sent record, the recipient public key used, nonce, ciphertext, id,
+   and timestamp.
 6. `POST /api/v1/messages` (section 8.2). On network failure, retry with the same
-   nonce and ciphertext; do not re-encrypt unless the recipient key changed
-   (which is blocked until acknowledged). The MVP has no server-side idempotency
-   key, so a retry can create a duplicate row; the client deduplicates by
-   message id.
+   `client_message_id`, nonce, and ciphertext; do not re-encrypt unless the
+   recipient key changed (which is blocked until acknowledged). The server
+   deduplicates the retry on `(sender, client_message_id)` and returns the
+   original row, so the client does not create a duplicate.
 
 The sender can decrypt their own sent message later:
 
@@ -402,6 +403,7 @@ Request:
 ```json
 {
   "recipient": "bob",
+  "client_message_id": "<uuidv4>",
   "nonce": "<base64 24 bytes>",
   "ciphertext": "<base64>",
   "client_ts": "2026-01-01T00:00:00Z"
@@ -411,21 +413,35 @@ Request:
 Server behavior:
 
 1. Require a session and derive the sender from it.
-2. Validate `recipient` exists, is not the sender, and matches the username
+2. Validate `client_message_id` is a canonical lowercase UUIDv4 string.
+3. Validate `recipient` exists, is not the sender, and matches the username
    rules.
-3. Decode and validate `nonce` is exactly 24 bytes.
-4. Decode and validate `ciphertext` is valid base64 and at most 65,536 bytes
+4. Decode and validate `nonce` is exactly 24 bytes.
+5. Decode and validate `ciphertext` is valid base64 and at most 65,536 bytes
    (64 KiB) decoded. The server does not enforce a minimum, does not inspect the
    authenticator, and never parses the body. Reject invalid base64.
-5. Insert `nonce`, `ciphertext`, and `client_ts` as opaque data.
-6. Return `201`:
+6. Insert `client_message_id`, `nonce`, `ciphertext`, and `client_ts` as opaque
+   data, with a unique constraint on `(sender_id, client_message_id)`.
+7. Return `201` on the first successful send:
 
 ```json
 {
   "id": "<uuid>",
+  "client_message_id": "<uuidv4>",
   "created_at": "2026-01-01T00:00:00Z"
 }
 ```
+
+Idempotent retry:
+
+- Same sender, same `client_message_id`, and byte-identical `recipient`,
+  `nonce`, and `ciphertext` returns `200` with the original message and server
+  `id`. No new row is created, and `client_ts` is not part of the identity
+  comparison.
+- Same sender and same `client_message_id` with a different `recipient`,
+  `nonce`, or `ciphertext` returns `409` and creates nothing.
+- Different senders may reuse the same `client_message_id`; the uniqueness rule
+  is scoped to the sender.
 
 The server never receives a plaintext length field, a subject, a preview, or a
 message type. The ciphertext length implies an approximate plaintext length.
@@ -442,6 +458,7 @@ Returns messages addressed to the current user, ordered by ascending
       "id": "<uuid>",
       "sender": "alice",
       "recipient": "bob",
+      "client_message_id": "<uuidv4>",
       "nonce": "<base64 24 bytes>",
       "ciphertext": "<base64>",
       "client_ts": "2026-01-01T00:00:00Z",
@@ -471,9 +488,10 @@ Client behavior:
 ### 8.4 `GET /api/v1/messages/sent?after=<cursor>`
 
 Returns messages sent by the current user, in the same shape, ordered by
-ascending `(created_at, id)`. This lets the sender decrypt their own history
-after a reload using the locally stored recipient public key. The server does not
-return plaintext or the recipient's private data.
+ascending `(created_at, id)`. Both inbox and sent responses include the
+`client_message_id`. This lets the sender decrypt their own history after a
+reload using the locally stored recipient public key. The server does not return
+plaintext or the recipient's private data.
 
 ### 8.5 `POST /api/v1/messages/{id}/ack`
 
@@ -542,19 +560,21 @@ sessions
 messages
   id                  uuid primary key
   sender_id           uuid references users
+  client_message_id   uuidv4
   recipient_id        uuid references users
   nonce               bytea(24)
   ciphertext          bytea
   client_ts           timestamptz
   created_at          timestamptz
   acked_at            timestamptz null
+  unique (sender_id, client_message_id)
   index (recipient_id, created_at, id)
   index (sender_id, created_at, id)
 ```
 
 There is no auth-salt column: the auth salt is public and derived from the
-username. There is no `seq` or `client_message_id` column in the MVP; pagination
-uses the opaque `(created_at, id)` cursor. There is no table for private keys,
+username. There is no `seq` column; pagination uses the opaque
+`(created_at, id)` cursor. There is no table for private keys,
 wrapped keys, recovery bundles, contact pins, safety numbers, message plaintext,
 or message previews. The server does not store `authSecret` after hashing it, and
 must not log it.
@@ -604,6 +624,8 @@ Operational requirements:
 
 ## 12. Message validation rules
 
+- `client_message_id`: canonical lowercase UUIDv4 string. Uniqueness is scoped
+  to `(sender_id, client_message_id)`.
 - Nonce: exactly 24 bytes after base64 decode.
 - Ciphertext: valid standard base64, at most 65,536 bytes decoded. The server
   does not enforce a minimum and does not inspect the body.
@@ -687,9 +709,16 @@ above. They are explicit because the code must not claim more than it does.
   authorization or Origin failures remain `403`.
 - **Opaque cursor, fixed page size.** Pagination uses an opaque base64url cursor
   over `(created_at, id)` and always returns at most 100 rows. There is no `seq`
-  column, no `client_message_id` idempotency key, and no `limit` query
-  parameter. A retried send can therefore create a duplicate row; the client
-  deduplicates by message id.
+  column and no `limit` query parameter.
+- **Idempotent send.** `POST /api/v1/messages` requires `client_message_id` and
+  enforces uniqueness on `(sender_id, client_message_id)`, as described in
+  section 8.2. Identical retries return the original message with `200`;
+  conflicting reuse returns `409`. This is no longer a deviation.
+- **First schema change.** The `client_message_id` column and its unique
+  constraint are the first schema change since the MVP. `create_all` does not
+  alter an existing table, so a development SQLite database created before this
+  change must be recreated. Reviewed migrations are still deferred; this is not
+  a production migration strategy.
 - **No `auth_salt`, `kdf_version`, or `/auth/params`.** The auth salt is the
   public username-derived value in section 2, so there is nothing to fetch or
   store. There is also no `/auth/me`; callers use the user object returned by

@@ -99,9 +99,15 @@ def message_payload(
     marker: bytes = b"opaque-marker",
     nonce: bytes | None = None,
     client_ts: str = "2026-01-01T00:00:00Z",
+    client_message_id: str | None = None,
 ) -> dict[str, str]:
     return {
         "recipient": recipient,
+        "client_message_id": (
+            client_message_id
+            if client_message_id is not None
+            else str(uuid4())
+        ),
         "nonce": b64(nonce if nonce is not None else secrets.token_bytes(24)),
         "ciphertext": b64(marker),
         "client_ts": client_ts,

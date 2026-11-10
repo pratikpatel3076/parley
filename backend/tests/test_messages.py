@@ -1,4 +1,5 @@
 import base64
+from uuid import uuid1, uuid4
 
 import pytest
 
@@ -244,6 +245,164 @@ def test_invalid_cursor_rejected(client) -> None:
     )
 
     assert response.status_code == 400
+
+
+def test_retrying_the_same_send_returns_the_original_message(client) -> None:
+    alice = _register(client)
+    bob = _register(client)
+    _as(client, alice)
+
+    client_message_id = str(uuid4())
+    payload = message_payload(
+        bob["username"],
+        client_message_id=client_message_id,
+    )
+
+    first = client.post(
+        "/api/v1/messages",
+        json=payload,
+        headers=auth_headers(),
+    )
+    assert first.status_code == 201
+    message_id = first.json()["id"]
+    assert first.json()["client_message_id"] == client_message_id
+
+    retry = client.post(
+        "/api/v1/messages",
+        json=payload,
+        headers=auth_headers(),
+    )
+    assert retry.status_code == 200
+    assert retry.json()["id"] == message_id
+    assert retry.json()["client_message_id"] == client_message_id
+
+    sent = client.get("/api/v1/messages/sent").json()["messages"]
+    assert len(sent) == 1
+    assert sent[0]["id"] == message_id
+    assert sent[0]["client_message_id"] == client_message_id
+
+    _as(client, bob)
+    inbox = client.get("/api/v1/messages/inbox").json()["messages"]
+    assert len(inbox) == 1
+    assert inbox[0]["id"] == message_id
+    assert inbox[0]["client_message_id"] == client_message_id
+
+
+@pytest.mark.parametrize("field", ["recipient", "nonce", "ciphertext"])
+def test_reused_client_message_id_with_different_payload_is_409(
+    client, field: str
+) -> None:
+    alice = _register(client)
+    bob = _register(client)
+    carol = _register(client)
+    _as(client, alice)
+
+    client_message_id = str(uuid4())
+    payload = message_payload(
+        bob["username"],
+        client_message_id=client_message_id,
+    )
+    first = client.post(
+        "/api/v1/messages",
+        json=payload,
+        headers=auth_headers(),
+    )
+    assert first.status_code == 201
+
+    conflicting = dict(payload)
+    if field == "recipient":
+        conflicting["recipient"] = carol["username"]
+    elif field == "nonce":
+        conflicting["nonce"] = b64(b"n" * 24)
+    else:
+        conflicting["ciphertext"] = b64(b"different-ciphertext")
+
+    response = client.post(
+        "/api/v1/messages",
+        json=conflicting,
+        headers=auth_headers(),
+    )
+    assert response.status_code == 409
+
+    sent = client.get("/api/v1/messages/sent").json()["messages"]
+    assert len(sent) == 1
+    assert sent[0]["id"] == first.json()["id"]
+
+
+def test_different_senders_may_reuse_the_same_client_message_id(
+    client,
+) -> None:
+    alice = _register(client)
+    bob = _register(client)
+    carol = _register(client)
+    client_message_id = str(uuid4())
+
+    _as(client, alice)
+    first = _send(
+        client,
+        carol["username"],
+        client_message_id=client_message_id,
+    )
+    assert first.status_code == 201
+
+    _as(client, bob)
+    second = _send(
+        client,
+        carol["username"],
+        client_message_id=client_message_id,
+    )
+    assert second.status_code == 201
+    assert second.json()["id"] != first.json()["id"]
+
+    _as(client, carol)
+    inbox = client.get("/api/v1/messages/inbox").json()["messages"]
+    assert len(inbox) == 2
+    assert {message["client_message_id"] for message in inbox} == {
+        client_message_id
+    }
+
+
+@pytest.mark.parametrize(
+    "client_message_id",
+    [
+        "not-a-uuid",
+        str(uuid1()),
+        str(uuid4()).upper(),
+        "{" + str(uuid4()) + "}",
+        "",
+    ],
+)
+def test_invalid_client_message_id_is_rejected(
+    client, client_message_id: str
+) -> None:
+    alice = _register(client)
+    bob = _register(client)
+    _as(client, alice)
+
+    response = _send(
+        client,
+        bob["username"],
+        client_message_id=client_message_id,
+    )
+
+    assert response.status_code == 422
+
+
+def test_missing_client_message_id_is_rejected(client) -> None:
+    alice = _register(client)
+    bob = _register(client)
+    _as(client, alice)
+
+    payload = message_payload(bob["username"])
+    del payload["client_message_id"]
+
+    response = client.post(
+        "/api/v1/messages",
+        json=payload,
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 422
 
 
 def test_database_never_stores_raw_password_or_auth_secret(client) -> None:

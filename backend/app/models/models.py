@@ -1,7 +1,15 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, LargeBinary, String
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -46,6 +54,11 @@ class Session(Base):
 class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
+        UniqueConstraint(
+            "sender_id",
+            "client_message_id",
+            name="uq_messages_sender_client_message_id",
+        ),
         Index(
             "ix_messages_recipient_created_id",
             "recipient_id",
@@ -64,6 +77,7 @@ class Message(Base):
     sender_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    client_message_id: Mapped[str] = mapped_column(String(36), nullable=False)
     recipient_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )

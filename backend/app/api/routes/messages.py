@@ -3,8 +3,16 @@ import binascii
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Response,
+    status,
+)
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthContext, get_auth_context
@@ -72,6 +80,7 @@ def _message_payload(
         "id": message.id,
         "sender": usernames.get(message.sender_id, "unknown"),
         "recipient": usernames.get(message.recipient_id, "unknown"),
+        "client_message_id": message.client_message_id,
         "nonce": base64.b64encode(message.nonce).decode("ascii"),
         "ciphertext": base64.b64encode(message.ciphertext).decode("ascii"),
         "client_ts": iso_utc(message.client_ts),
@@ -80,15 +89,73 @@ def _message_payload(
     }
 
 
+def _send_response(message: Message) -> dict[str, str]:
+    return {
+        "id": message.id,
+        "client_message_id": message.client_message_id,
+        "created_at": iso_utc(message.created_at),
+    }
+
+
+def _replay_or_conflict(
+    existing: Message,
+    *,
+    recipient_id: str | None,
+    nonce: bytes,
+    ciphertext: bytes,
+    response: Response,
+) -> dict[str, str]:
+    """Return the original message for a matching retry, else 409.
+
+    The idempotency key is (sender_id, client_message_id). A retry only counts
+    as the same send when the opaque payload is byte-for-byte identical, so a
+    reused key with different data cannot silently overwrite or duplicate.
+    """
+    if (
+        existing.recipient_id != recipient_id
+        or existing.nonce != nonce
+        or existing.ciphertext != ciphertext
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "client_message_id was already used with a different payload"
+            ),
+        )
+
+    # The first send is 201; a replay of the same send is 200.
+    response.status_code = status.HTTP_200_OK
+    return _send_response(existing)
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def send_message(
     payload: MessageCreateRequest,
+    response: Response,
     context: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     recipient = await db.scalar(
         select(User).where(User.username == payload.recipient)
     )
+    nonce = base64.b64decode(payload.nonce, validate=True)
+    ciphertext = base64.b64decode(payload.ciphertext, validate=True)
+
+    existing = await db.scalar(
+        select(Message).where(
+            Message.sender_id == context.user.id,
+            Message.client_message_id == payload.client_message_id,
+        )
+    )
+    if existing is not None:
+        return _replay_or_conflict(
+            existing,
+            recipient_id=recipient.id if recipient is not None else None,
+            nonce=nonce,
+            ciphertext=ciphertext,
+            response=response,
+        )
+
     if recipient is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -102,16 +169,37 @@ async def send_message(
 
     message = Message(
         sender_id=context.user.id,
+        client_message_id=payload.client_message_id,
         recipient_id=recipient.id,
-        nonce=base64.b64decode(payload.nonce, validate=True),
-        ciphertext=base64.b64decode(payload.ciphertext, validate=True),
+        nonce=nonce,
+        ciphertext=ciphertext,
         client_ts=to_naive_utc(payload.client_ts),
     )
     db.add(message)
-    await db.flush()
-    await db.commit()
+    try:
+        await db.flush()
+        await db.commit()
+    except IntegrityError:
+        # A concurrent identical request won the unique constraint. Re-read the
+        # winner and return it, or report a payload conflict.
+        await db.rollback()
+        existing = await db.scalar(
+            select(Message).where(
+                Message.sender_id == context.user.id,
+                Message.client_message_id == payload.client_message_id,
+            )
+        )
+        if existing is None:
+            raise
+        return _replay_or_conflict(
+            existing,
+            recipient_id=recipient.id,
+            nonce=nonce,
+            ciphertext=ciphertext,
+            response=response,
+        )
 
-    return {"id": message.id, "created_at": iso_utc(message.created_at)}
+    return _send_response(message)
 
 
 @router.get("/inbox")

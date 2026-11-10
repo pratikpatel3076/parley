@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
@@ -12,6 +13,12 @@ class MessageCreateRequest(BaseModel):
     recipient: str = Field(
         validation_alias=AliasChoices("recipient", "to")
     )
+    client_message_id: str = Field(
+        validation_alias=AliasChoices(
+            "client_message_id",
+            "clientMessageId",
+        )
+    )
     nonce: str
     ciphertext: str
     client_ts: datetime = Field(
@@ -22,6 +29,21 @@ class MessageCreateRequest(BaseModel):
     @classmethod
     def check_recipient(cls, value: str) -> str:
         return validate_username(value)
+
+    @field_validator("client_message_id")
+    @classmethod
+    def check_client_message_id(cls, value: str) -> str:
+        try:
+            parsed = uuid.UUID(value)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "client_message_id must be a UUIDv4 string"
+            ) from exc
+        if parsed.version != 4 or str(parsed) != value:
+            raise ValueError(
+                "client_message_id must be a canonical lowercase UUIDv4 string"
+            )
+        return value
 
     @field_validator("nonce")
     @classmethod
