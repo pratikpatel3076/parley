@@ -1,8 +1,11 @@
 # Parley Protocol (MVP)
 
 Status: the backend MVP implements the server side of sections 3.2, 5, 6.1,
-8.2-8.5, and 9, with the deviations listed in section 16. The frontend and the
-client-side flows (sections 3.1, 4, 6, 7, and 8.1) are still specified design,
+8.2-8.5, and 9, with the backend deviations listed in section 16. The frontend
+implements the client crypto layer in `frontend/src/crypto/` (keypair, wrapping,
+auth-secret derivation, envelopes, safety numbers, password policy, IndexedDB
+storage), covered by vitest. The UI and the request/response flows that wire that
+layer to the server (sections 3.1, 4, 6, 7, and 8.1 in the running app) are still
 not implemented. This document is the contract the implementation must satisfy.
 Security claims and limits are in [THREAT_MODEL.md](THREAT_MODEL.md).
 
@@ -33,11 +36,13 @@ decrypts them.
 | Message encryption | `crypto_box_easy` (X25519 + XSalsa20-Poly1305) | `libsodium-wrappers` |
 | Message decryption | `crypto_box_open_easy` | `libsodium-wrappers` |
 | Identity keypair | `crypto_box_keypair` (X25519) | `libsodium-wrappers` |
-| Safety number digest | BLAKE2b-256 (`crypto_generichash`) | `libsodium-wrappers` |
+| Safety number digest | BLAKE2b-512 (`crypto_generichash`, 64 bytes) | `libsodium-wrappers` |
 | Private-key wrapping key | PBKDF2-HMAC-SHA-256, 600,000 iterations, 32-byte output | Web Crypto |
 | Auth secret | PBKDF2-HMAC-SHA-256, 600,000 iterations, public username salt | Web Crypto |
-| Private-key wrapping | AES-256-GCM | Web Crypto |
-| Auth-secret KDF salt | public `UTF-8("parley/auth/v1" \|\| 0x00 \|\| username)` | Client |
+| Private-key wrapping | AES-256-GCM, 12-byte IV, 16-byte tag | Web Crypto |
+| Auth-secret KDF salt | public `UTF-8("parley/auth/v1:" + username)` | Client |
+| Private-key KDF salt | `UTF-8("parley/wrap/v1:") \|\| random 16-byte salt` | Client |
+| Private-key wrapping AAD | `UTF-8("parley/wrap/v1") \|\| publicKey` | Client |
 | Server auth hash | bcrypt cost 12 over the base64 text of `authSecret` (44 ASCII characters) | Server library |
 | Session access token | JWT HS256, 15 minutes | Server library |
 | Refresh token | 32 random bytes, stored only as SHA-256 hash | Server library + CSPRNG |
@@ -51,11 +56,13 @@ Usernames are lowercase ASCII only and match `^[a-z0-9_]{3,32}$`. They are not
 case-folded and not Unicode-normalized: mixed case or non-ASCII input is
 rejected, not normalized into a different name. This removes normalization
 ambiguity from the public identity and from the `authSecret` salt. Passwords are
-normalized to Unicode NFC and encoded as UTF-8 before derivation; this avoids
-cross-platform differences in the same visual password.
+normalized to Unicode NFKC and encoded as UTF-8 before every password-based
+derivation; NFKC makes composed and decomposed forms of the same visual password
+produce the same secret. The client applies NFKC in both the auth-secret and
+wrapped-key paths.
 
 `authSecret` is derived with a public salt:
-`UTF-8("parley/auth/v1" || 0x00 || username)`. No random `authSalt` is generated
+`UTF-8("parley/auth/v1:" + username)`. No random `authSalt` is generated
 or stored. Because the salt is public, an attacker who obtains the stored
 bcrypt hash can test password guesses offline without the device; the device-only
 wrapped key still prevents message decryption. See
@@ -80,26 +87,29 @@ stores the raw 32 decoded bytes, and it never receives the password.
    ```
    `authSecret` does not get a random salt. Its salt is public and derived from
    the username in step 5.
-4. Normalize the password to NFC and encode it as UTF-8.
+4. Normalize the password to NFKC and encode it as UTF-8.
 5. Derive two independent 32-byte secrets with different salts **and**
    different domain labels:
    ```
-   wrapKey     = PBKDF2-SHA-256(password, "parley/wrap/v1" || 0x00 || wrapSalt,
+   wrapKey     = PBKDF2-SHA-256(NFKC(password),
+                                "parley/wrap/v1:" || wrapSalt,
                                 600000, 32)
-   authSecret  = PBKDF2-SHA-256(password, "parley/auth/v1" || 0x00 || username,
+   authSecret  = PBKDF2-SHA-256(NFKC(password),
+                                "parley/auth/v1:" || username,
                                 600000, 32)
    ```
-   The ASCII label is part of the PBKDF2 salt input. The label and salt/username
-   are concatenated with a zero byte so the inputs are unambiguous. The wrap
-   salt stays on the device; the auth salt is reproducible from the public
-   username.
+   The ASCII label plus a colon is part of the PBKDF2 salt input. The wrap salt
+   stays on the device; the auth salt is reproducible from the public username.
 6. Import `wrapKey` as an AES-256-GCM key with `encrypt`/`decrypt` usages. Keep
    `wrapKey` in memory only.
-7. Generate a 12-byte AES-GCM nonce and wrap the raw `secretKey`:
+7. Generate a 12-byte AES-GCM IV and wrap the raw `secretKey`:
    ```
-   aad        = UTF-8("parley/private-key/v1" || 0x00 || username)
-   wrapped    = AES-256-GCM-Encrypt(wrapKey, nonce, aad, secretKey)
+   aad        = UTF-8("parley/wrap/v1") || publicKey
+   wrapped    = AES-256-GCM-Encrypt(wrapKey, iv, aad, secretKey)
    ```
+   The public key, not the username, is bound into the AAD so the blob cannot be
+   moved to another identity. The stored blob records `v`, `kdf`, `iterations`,
+   `salt`, `iv`, and `ciphertext`.
 8. Store the identity record **only in IndexedDB** (section 4).
 9. Register with the server (section 3.2). `authSecret` and `publicKey` are sent;
    `wrapKey`, `secretKey`, `wrapped`, and `wrapSalt` are not.
@@ -154,33 +164,43 @@ that the account has no usable local key. Parley cannot recover it.
 
 ## 4. Private-key storage and unlock
 
-The only persisted copy of the private key is this IndexedDB record:
+The only persisted copy of the private key is this IndexedDB record, in database
+`parley`, object store `identity`, keyed by `username`:
 
 ```json
 {
-  "v": 1,
   "username": "alice",
-  "public_key": "<base64 32 bytes>",
-  "wrap_salt": "<base64 16 bytes>",
-  "wrap_nonce": "<base64 12 bytes>",
-  "wrapped_secret_key": "<base64 AES-256-GCM ciphertext>",
-  "created_at": "2026-01-01T00:00:00Z"
+  "publicKey": "<base64 32 bytes>",
+  "wrapped": {
+    "v": 1,
+    "kdf": "pbkdf2-sha256",
+    "iterations": 600000,
+    "salt": "<base64 16 random bytes>",
+    "iv": "<base64 12 bytes>",
+    "ciphertext": "<base64 AES-256-GCM ciphertext || 16-byte tag>"
+  }
 }
 ```
 
-`wrapped_secret_key` is 48 bytes: 32 bytes of encrypted key plus the 16-byte
-GCM tag. The AAD is `UTF-8("parley/private-key/v1" || 0x00 || username)`, which
-binds the record to the account name.
+`wrapped.ciphertext` is 48 bytes: 32 bytes of encrypted key plus the 16-byte
+GCM tag. The AAD is `UTF-8("parley/wrap/v1") || publicKey`, which binds the
+blob to that identity's public key. The random `salt` is combined with the
+`"parley/wrap/v1:"` label to form the PBKDF2 salt.
 
 Unlock steps:
 
 1. Read the record from IndexedDB.
-2. Derive `wrapKey` from the entered password, `wrap_salt`, and the same label.
-3. Decrypt `wrapped_secret_key` with AES-256-GCM using `wrap_nonce` and the AAD.
+2. Derive the AES key from the entered NFKC password, the stored `iterations`,
+   the stored `salt`, and the `"parley/wrap/v1:"` label.
+3. Decrypt `wrapped.ciphertext` with AES-256-GCM using `wrapped.iv` and the AAD.
+   Any authentication failure (wrong password, wrong public key, or a tampered
+   blob) is reported as a wrong-password error; nothing is returned.
 4. Keep the raw `secretKey` in memory only while the vault is unlocked.
 5. On lock/logout, overwrite the byte array with zeros (`sodium.memzero`) and
    drop all references. This is best effort; JavaScript cannot guarantee that
-   the garbage collector or engine copies are erased.
+   the garbage collector, engine copies, or immutable strings are erased. The
+   base64 wrapper strings and the `CryptoKey` handle cannot be wiped directly,
+   so the runtime may retain them until it collects them.
 
 The wrapped record is **not** uploaded to the server and **not** included in any
 backup API. Clearing site data, using a different browser profile, or losing the
@@ -194,8 +214,8 @@ server-side wrapped copy.
 The client already knows the username, so it derives the salt locally:
 
 ```
-authSalt   = UTF-8("parley/auth/v1" || 0x00 || username)
-authSecret = PBKDF2-SHA-256(NFC(password), authSalt, 600000, 32)
+authSalt   = UTF-8("parley/auth/v1:" + username)
+authSecret = PBKDF2-SHA-256(NFKC(password), authSalt, 600000, 32)
 ```
 
 There is no `/auth/params` endpoint in the MVP and no auth salt is stored on the
@@ -218,7 +238,7 @@ Request:
 
 Client steps before the request:
 
-1. Normalize the password to NFC.
+1. Normalize the password to NFKC.
 2. Derive `authSecret` from the password, the username-derived salt, and the
    `"parley/auth/v1"` label.
 3. Send only `authSecret`; the password never leaves the device.
@@ -237,8 +257,8 @@ Server behavior:
 After a successful login the client:
 
 1. Reads the local identity record.
-2. Derives `wrapKey` from the password and `wrap_salt`.
-3. Decrypts `wrapped_secret_key` and opens the vault.
+2. Derives `wrapKey` from the password and the wrapped record's `salt`.
+3. Decrypts `wrapped.ciphertext` and opens the vault.
 4. If no local record exists, reports that this device has no key for the
    account. It must not generate a replacement key silently.
 
@@ -305,22 +325,23 @@ client's pins or verification state.
 
 ### 6.2 Pin record
 
-On first contact with a username, the client stores:
+On first contact with a username, the client stores an IndexedDB record in the
+`contacts` store, keyed by `owner + ":" + username`:
 
 ```json
 {
+  "owner": "alice",
   "username": "bob",
-  "public_key": "<base64>",
-  "first_seen": "2026-01-01T00:00:00Z",
-  "last_seen": "2026-01-02T00:00:00Z",
-  "verified": false,
-  "safety_number": "12345 67890 ..."
+  "publicKey": "<base64>",
+  "firstSeen": 1767225600000,
+  "verified": false
 }
 ```
 
-`verified` becomes true only when the user marks the safety number as compared
-out of band. Pinning is trust-on-first-use: it detects a later change; it does
-not authenticate the first contact.
+`firstSeen` is milliseconds since the Unix epoch. `verified` becomes true only
+when the user marks the safety number as compared out of band. Pinning is
+trust-on-first-use: it detects a later change; it does not authenticate the
+first contact.
 
 ### 6.3 Change handling
 
@@ -329,8 +350,9 @@ not authenticate the first contact.
 - If the fetched key differs from the pin, the client blocks sending and shows
   both safety numbers. Sending remains blocked until the user explicitly
   acknowledges the new key.
-- Acknowledging updates the pin, sets `verified` to false, and records the change
-  time. The old key is retained for display/audit, not for silent fallback.
+- Acknowledging replaces the pinned key, sets `verified` to false, and keeps the
+  original `firstSeen` value. The old key is not retained by the storage helper;
+  the user-facing warning is the audit record.
 - On receipt, the client fetches the sender key and compares it with the pin. A
   changed key blocks automatic decryption and shows the same warning.
 - The server cannot force a client to accept a new key. A malicious server can
@@ -348,19 +370,19 @@ public keys:
 1. Decode both 32-byte public keys.
 2. Sort them lexicographically by unsigned byte value:
    `pkLow, pkHigh`.
-3. Compute:
+3. Compute a 64-byte BLAKE2b digest:
    ```
    digest = crypto_generichash(
-     32,
-     UTF-8("parley/safety-number/v1") || 0x00 || pkLow || pkHigh
+     64,
+     UTF-8("parley/safety/v1") || pkLow || pkHigh
    )
    ```
-4. Interpret `digest` as a big-endian unsigned integer, reduce modulo `10^60`,
-   and zero-pad to exactly 60 decimal digits:
+4. Split the first 48 bytes into 12 consecutive 4-byte groups. Interpret each
+   group as a big-endian unsigned 32-bit integer and reduce it modulo `10^5`:
    ```
-   digits = decimal(digest_as_integer % 10**60).zfill(60)
+   group[i] = big_endian_u32(digest[4*i .. 4*i+3]) % 100000
    ```
-5. Group into 12 groups of 5 digits separated by spaces:
+5. Zero-pad each group to exactly 5 digits and join them with single spaces:
    ```
    12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67890
    ```
@@ -368,30 +390,31 @@ public keys:
    in the contact view and require an explicit "mark as verified" action after
    the user compares it out of band.
 
-The modulo reduction introduces a negligible bias; the safety number is a
-comparison value, not a secret or a key. It is safe to display and read aloud.
-A matching safety number only proves that both sides see the same two public
-keys. It does not prove that the keys belong to the people behind the usernames.
-A mismatched safety number means a key substitution, a wrong contact, or a
-tampered client.
+The modulo reduction introduces a small bias (2^32 is not a multiple of 10^5);
+the safety number is a comparison value, not a secret or a key. It is safe to
+display and read aloud. A matching safety number only proves that both sides see
+the same two public keys. It does not prove that the keys belong to the people
+behind the usernames. A mismatched safety number means a key substitution, a
+wrong contact, or a tampered client.
 
 ## 8. Sending messages
 
 ### 8.1 Client steps
 
 1. Ensure the vault is unlocked and the recipient key is pinned (section 6).
-2. Encode the plaintext as UTF-8.
-3. Generate a 24-byte nonce with `randombytes_buf(24)`.
-4. Encrypt:
+2. Generate one UUIDv4 `client_message_id` per logical message.
+3. Build the plaintext envelope (section 8.1.1) and encode it as UTF-8. The
+   client rejects a body longer than 60,000 UTF-8 bytes.
+4. Generate a 24-byte nonce with `randombytes_buf(24)`.
+5. Encrypt the envelope, not the bare text:
    ```
-   ciphertext = crypto_box_easy(plaintext, nonce, recipientPublicKey, mySecretKey)
+   ciphertext = crypto_box_easy(envelope_json, nonce, recipientPublicKey, mySecretKey)
    ```
    `crypto_box_easy` returns the 16-byte authenticator followed by the
    ciphertext.
-5. Generate one UUIDv4 `client_message_id` per logical message and persist it
-   with the sent record, the recipient public key used, nonce, ciphertext, id,
-   and timestamp.
-6. `POST /api/v1/messages` (section 8.2). On network failure, retry with the same
+6. Persist the `client_message_id`, envelope timestamp, recipient public key
+   used, nonce, and ciphertext with the sent record.
+7. `POST /api/v1/messages` (section 8.2). On network failure, retry with the same
    `client_message_id`, nonce, and ciphertext; do not re-encrypt unless the
    recipient key changed (which is blocked until acknowledged). The server
    deduplicates the retry on `(sender, client_message_id)` and returns the
@@ -406,6 +429,37 @@ plaintext = crypto_box_open_easy(ciphertext, nonce, recipientPublicKey, mySecret
 This works because the box shared secret is symmetric in the two keypairs. The
 client must use the recipient public key that was current when the message was
 sent, not a newly fetched key.
+
+#### 8.1.1 Plaintext envelope
+
+The bytes handed to `crypto_box_easy` are a UTF-8 JSON object:
+
+```json
+{
+  "v": 1,
+  "id": "<clientMessageId>",
+  "ts": 1767225600000,
+  "body": "<text>"
+}
+```
+
+- `v` is the envelope version (`1`).
+- `id` is the same UUIDv4 sent as `client_message_id` to the server.
+- `ts` is the client send time in milliseconds since the Unix epoch.
+- `body` is the UTF-8 message text. Empty text is allowed; more than 60,000
+  UTF-8 bytes is rejected before encryption.
+
+After `crypto_box_open_easy`, the client must:
+
+1. Reject anything where `v !== 1` or the JSON shape is invalid.
+2. Reject anything where the inner `id` does not equal the outer
+   `client_message_id` (`EnvelopeMismatchError`). This is what makes a server
+   that moves ciphertext between message rows detectable.
+3. Only then display `body`.
+
+The envelope is authenticated by the AEAD, so a server cannot change `id`, `ts`,
+or `body` without failing decryption. A server can still drop, delay, duplicate,
+or reorder whole ciphertexts; see [THREAT_MODEL.md](THREAT_MODEL.md).
 
 ### 8.2 `POST /api/v1/messages`
 
@@ -742,3 +796,34 @@ above. They are explicit because the code must not claim more than it does.
   that user before returning `401`, as a theft signal.
 - **Timestamps.** `client_ts` is normalized to UTC when stored; message ordering
   uses the server's `created_at`, never `client_ts`.
+
+## 17. Client crypto implementation notes
+
+The client crypto layer lives in `frontend/src/crypto/` and is covered by
+vitest. It depends only on `libsodium-wrappers` and Web Crypto; there are no
+custom primitives.
+
+- **Binary encoding.** Public keys, secret keys, nonces, salts, IVs, ciphertext,
+  and the derived auth secret are standard padded base64 in memory and on the
+  wire.
+- **Async surface.** `ready()` resolves the single libsodium initialisation
+  promise. `deriveAuthSecret`, the keypair/wrapping helpers, the message helpers,
+  the safety number, and the IndexedDB helpers return promises. Synchronous
+  validation failures throw a typed error.
+- **Typed failures.** `InvalidInputError`, `DecryptionError`, `WrongPasswordError`,
+  `EnvelopeMismatchError`, `KeyChangedError`, `WeakPasswordError`, and
+  `StorageError` all extend `ParleyError`. No helper returns a silent default.
+- **Test-only KDF override.** `deriveAuthSecret` and `wrapSecretKey` accept an
+  optional iteration count so tests can use a low work factor. Production callers
+  omit it and get the 600,000 constant.
+- **Storage names.** Database `parley` version 1, stores `identity` (keyed by
+  `username`) and `contacts` (keyed by `owner + ":" + username`). Only the
+  wrapped key blob and public metadata are stored; no raw private key, password,
+  wrap key, or auth secret is persisted.
+- **Length limits.** `encryptMessage` rejects a body over 60,000 UTF-8 bytes and
+  an envelope over 64,000 bytes, leaving room for the 16-byte box authenticator
+  under the server's 65,536-byte ciphertext limit.
+- **Memory.** Raw secret buffers are overwritten with `sodium.memzero` when they
+  are no longer needed. JavaScript strings, base64 wrappers, and `CryptoKey`
+  handles cannot be zeroed, and the engine or garbage collector may retain
+  copies. Zeroization is best effort, not a guarantee.

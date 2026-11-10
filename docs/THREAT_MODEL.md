@@ -1,8 +1,9 @@
 # Parley Threat Model
 
 Status: design document for the protocol in [PROTOCOL.md](PROTOCOL.md). The
-backend MVP implements the server side, but the frontend and client-side crypto
-are not implemented, so the repository is not a working messenger. This model
+backend MVP implements the server side, and the frontend implements the client
+crypto layer (`frontend/src/crypto/`), but there is no UI and the end-to-end
+flows are not wired up, so the repository is not a working messenger. This model
 describes the intended design and its limits; it is not a claim that the code
 has been audited.
 
@@ -83,16 +84,23 @@ Everything else is explicitly out of scope or a known limitation.
 
 - **Capabilities:** everything the honest-but-curious server can do, plus
   serving modified JavaScript, lying about public keys, replaying or modifying
-  API responses, and selectively censoring.
+  API responses, dropping, delaying, duplicating, or reordering whole
+  ciphertexts, and selectively censoring.
 - **Can:** steal plaintext or private keys by serving malicious client code;
   substitute a public key on first contact (first-contact MITM); suppress a key
-  change warning by lying; replay old ciphertext; cause denials of service.
+  change warning by lying; replay old ciphertext; drop a message; delay or
+  reorder delivery; cause denials of service.
 - **Cannot:** forge a valid `crypto_box_easy` ciphertext for a pinned key without
-  the sender's private key; decrypt ciphertext without obtaining keys.
+  the sender's private key; decrypt ciphertext without obtaining keys; move a
+  ciphertext to a different `client_message_id` without detection.
 - **Mitigations:**
   - Public keys are pinned on first contact; a changed key blocks sending.
   - Safety numbers can be compared out of band to detect substitution.
   - AEAD rejects modified ciphertext.
+  - The encrypted v1 envelope carries the `client_message_id` as an
+    authenticated `id`. After decryption the client requires the inner `id` to
+    match the outer row id, so a server that swaps ciphertexts between rows is
+    detected (`EnvelopeMismatchError`).
   - Clients should require explicit user acknowledgement before accepting a new
     key.
 - **Hard limit:** if the server serves modified JavaScript, all client-side
@@ -178,7 +186,7 @@ Everything else is explicitly out of scope or a known limitation.
 ### Offline guessing boundary
 
 The server stores `bcrypt(authSecret)`. The `authSecret` salt is public and
-derived from `UTF-8("parley/auth/v1" || 0x00 || username)`, so offline guessing
+derived from `UTF-8("parley/auth/v1:" + username)`, so offline guessing
 needs **only** the stored bcrypt hash plus the username. Given a candidate
 password, an attacker derives `authSecret` with PBKDF2-HMAC-SHA-256 at 600,000
 iterations, base64-encodes it, and bcrypt-compares the result. Recovering
@@ -276,6 +284,17 @@ safe. A strong, unique password remains part of the security contract.
   concerns. The MVP deduplicates by message id and tolerates reordering, but it
   does not claim exactly-once delivery. Send retries are idempotent only when
   the client reuses the same `client_message_id` with an identical payload.
+- A malicious server can drop, delay, duplicate, or reorder whole ciphertexts.
+  The client detects replays and id swaps only when the authenticated envelope
+  `id` disagrees with the row's `client_message_id`; a replayed ciphertext that
+  keeps its original id is still a valid old message. Dropped messages are
+  undetectable by the client. There is no delivery guarantee, no gap detection,
+  and no per-conversation sequence number in the MVP.
+- There is no forward secrecy. The static box keypair means a stolen private key
+  decrypts every past message whose ciphertext the attacker recorded, and all
+  future messages until the user replaces the identity. `sodium.memzero` reduces
+  the window for live memory but cannot erase ciphertext already stored by the
+  server or copies retained by the JavaScript engine.
 - Rate limits key on the direct client IP. `X-Forwarded-For` is not trusted by
   default because a client can forge it. A deployment behind a reverse proxy
   would need an explicit trusted-proxy configuration, which the MVP does not
