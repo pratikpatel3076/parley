@@ -6,20 +6,24 @@ build-backend = "setuptools.build_meta"
 name = "parley-backend"
 version = "0.1.0"
 description = "Parley backend scaffold: FastAPI and async SQLAlchemy"
-requires-python = ">=3.11"
+requires-python = ">=3.13,<3.14"
 dependencies = [
-  "fastapi>=0.115,<1.0",
-  "uvicorn[standard]>=0.32,<1.0",
-  "sqlalchemy[asyncio]>=2.0.36,<3.0",
-  "aiosqlite>=0.20,<1.0",
-  "pydantic-settings>=2.7,<3.0",
+  "fastapi==0.162.2",
+  "starlette==1.10.0",
+  "uvicorn[standard]==0.54.0",
+  "sqlalchemy[asyncio]==2.1.8",
+  "aiosqlite==0.22.1",
+  "pydantic==2.14.3",
+  "pydantic-settings==2.16.2",
+  "bcrypt==5.0.0",
+  "PyJWT==2.15.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "httpx>=0.28,<1.0",
-  "pytest>=8.3,<10.0",
-  "pytest-asyncio>=0.25,<2.0",
+  "httpx2==2.16.0",
+  "pytest==9.2.0",
+  "pytest-asyncio==1.4.1.post1",
 ]
 
 [tool.setuptools.packages.find]
