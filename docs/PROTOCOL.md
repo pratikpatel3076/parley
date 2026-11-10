@@ -32,9 +32,11 @@ decrypts them.
 | Message decryption | `crypto_box_open_easy` | `libsodium-wrappers` |
 | Identity keypair | `crypto_box_keypair` (X25519) | `libsodium-wrappers` |
 | Safety number digest | BLAKE2b-256 (`crypto_generichash`) | `libsodium-wrappers` |
-| Private-key wrapping key | PBKDF2-HMAC-SHA-256, 310,000 iterations, 32-byte output | Web Crypto |
+| Private-key wrapping key | PBKDF2-HMAC-SHA-256, 600,000 iterations, 32-byte output | Web Crypto |
+| Auth secret | PBKDF2-HMAC-SHA-256, 600,000 iterations, public username salt | Web Crypto |
 | Private-key wrapping | AES-256-GCM | Web Crypto |
-| Server auth hash | bcrypt, cost 12 | Server library |
+| Auth-secret KDF salt | public `UTF-8("parley/auth/v1" \|\| 0x00 \|\| username)` | Client |
+| Server auth hash | bcrypt cost 12 over the base64 text of `authSecret` (44 ASCII characters) | Server library |
 | Session access token | JWT HS256, 15 minutes | Server library |
 | Refresh token | 32 random bytes, stored only as SHA-256 hash | Server library + CSPRNG |
 
@@ -43,10 +45,23 @@ PBKDF2 and AES-256-GCM key wrapping; message encryption and safety numbers use
 libsodium. Random values come from `sodium.randombytes_buf` where libsodium is
 already required, and from `crypto.getRandomValues` otherwise.
 
-Usernames are ASCII, lowercase, and match `^[a-z0-9_]{3,32}$`. Passwords are
+Usernames are lowercase ASCII only and match `^[a-z0-9_]{3,32}$`. They are not
+case-folded and not Unicode-normalized: mixed case or non-ASCII input is
+rejected, not normalized into a different name. This removes normalization
+ambiguity from the public identity and from the `authSecret` salt. Passwords are
 normalized to Unicode NFC and encoded as UTF-8 before derivation; this avoids
-cross-platform differences in the same visual password. Usernames are not
-normalized with Unicode because they are restricted to ASCII.
+cross-platform differences in the same visual password.
+
+`authSecret` is derived with a public salt:
+`UTF-8("parley/auth/v1" || 0x00 || username)`. No random `authSalt` is generated
+or stored. Because the salt is public, an attacker who obtains the stored
+bcrypt hash can test password guesses offline without the device; the device-only
+wrapped key still prevents message decryption. See
+[THREAT_MODEL.md](THREAT_MODEL.md), "Offline guessing boundary".
+
+The server bcrypt-hashes the base64 text of `authSecret`, which is 44 ASCII
+characters and therefore below bcrypt's 72-byte input limit. It never hashes or
+stores the raw 32 decoded bytes, and it never receives the password.
 
 ## 3. Identity registration
 
@@ -57,22 +72,25 @@ normalized with Unicode because they are restricted to ASCII.
    ```
    (publicKey, secretKey) = crypto_box_keypair()   // 32 bytes each
    ```
-3. Generate two independent random salts:
+3. Generate one random salt for local key wrapping:
    ```
    wrapSalt = randombytes_buf(16)   // never leaves the device
-   authSalt = randombytes_buf(16)   // sent to the server
    ```
+   `authSecret` does not get a random salt. Its salt is public and derived from
+   the username in step 5.
 4. Normalize the password to NFC and encode it as UTF-8.
 5. Derive two independent 32-byte secrets with different salts **and**
    different domain labels:
    ```
    wrapKey     = PBKDF2-SHA-256(password, "parley/wrap/v1" || 0x00 || wrapSalt,
-                                310000, 32)
-   authSecret  = PBKDF2-SHA-256(password, "parley/auth/v1" || 0x00 || authSalt,
-                                310000, 32)
+                                600000, 32)
+   authSecret  = PBKDF2-SHA-256(password, "parley/auth/v1" || 0x00 || username,
+                                600000, 32)
    ```
-   The ASCII label is part of the PBKDF2 salt input. The label and salt are
-   concatenated with a zero byte so the inputs are unambiguous.
+   The ASCII label is part of the PBKDF2 salt input. The label and salt/username
+   are concatenated with a zero byte so the inputs are unambiguous. The wrap
+   salt stays on the device; the auth salt is reproducible from the public
+   username.
 6. Import `wrapKey` as an AES-256-GCM key with `encrypt`/`decrypt` usages. Keep
    `wrapKey` in memory only.
 7. Generate a 12-byte AES-GCM nonce and wrap the raw `secretKey`:
@@ -81,9 +99,8 @@ normalized with Unicode because they are restricted to ASCII.
    wrapped    = AES-256-GCM-Encrypt(wrapKey, nonce, aad, secretKey)
    ```
 8. Store the identity record **only in IndexedDB** (section 4).
-9. Register with the server (section 3.2). `authSecret`, `authSalt`, and
-   `publicKey` are sent; `wrapKey`, `secretKey`, `wrapped`, and `wrapSalt` are
-   not.
+9. Register with the server (section 3.2). `authSecret` and `publicKey` are sent;
+   `wrapKey`, `secretKey`, `wrapped`, and `wrapSalt` are not.
 
 The `wrapKey` must never be written to IndexedDB, localStorage, a cookie, a log,
 or the network.
@@ -95,25 +112,23 @@ Request:
 ```json
 {
   "username": "alice",
-  "auth_secret": "<base64 of 32-byte authSecret>",
-  "auth_salt": "<base64 of 16-byte authSalt>",
-  "public_key": "<base64 of 32-byte publicKey>",
-  "kdf_version": 1
+  "authSecret": "<base64 of 32-byte authSecret>",
+  "publicKey": "<base64 of 32-byte publicKey>"
 }
 ```
 
 Server behavior:
 
 1. Validate the username format and uniqueness.
-2. Decode and validate lengths: `auth_secret` 32 bytes, `auth_salt` 16 bytes,
-   `public_key` 32 bytes.
-3. Require `kdf_version == 1`; reject unknown versions rather than guessing.
-4. Hash `auth_secret` with bcrypt cost 12 and store the hash. Never store the
-   raw value.
-5. Store `auth_salt`, `public_key`, and `kdf_version`. Do not store `wrapSalt`,
-   `wrapKey`, `secretKey`, or any wrapped private-key record.
-6. Create a session (section 5) and set the auth cookies.
-7. Return `201`:
+2. Validate that `authSecret` and `publicKey` are canonical base64 decoding to
+   exactly 32 bytes each.
+3. bcrypt-hash the base64 text of `authSecret` (`authSecret` is exactly 44 ASCII
+   characters) with cost 12 and store only the hash. Never store or log the raw
+   value.
+4. Store `publicKey`. Do not store an auth salt, `wrapSalt`, `wrapKey`,
+   `secretKey`, or any wrapped private-key record.
+5. Create a session (section 5) and set the auth cookies.
+6. Return `201`:
 
 ```json
 {
@@ -122,12 +137,11 @@ Server behavior:
     "username": "alice",
     "public_key": "<base64>",
     "created_at": "2026-01-01T00:00:00Z"
-  },
-  "kdf_version": 1
+  }
 }
 ```
 
-Errors: `400` invalid input, `409` username taken, `429` rate limited. The
+Errors: `422` invalid input, `409` username taken, `429` rate limited. The
 registration response intentionally reveals whether a username is available;
 that is unavoidable for a public username registry.
 
@@ -173,24 +187,21 @@ server-side wrapped copy.
 
 ## 5. Login and sessions
 
-### 5.1 `GET /api/v1/auth/params?username=alice`
+### 5.1 Client-side login preparation
 
-Returns the public KDF parameters needed before login:
-
-```json
-{ "auth_salt": "<base64 16 bytes>", "kdf_version": 1 }
-```
-
-The endpoint requires no session because the client has not authenticated yet.
-For an unknown username, the server returns a synthetic salt:
+The client already knows the username, so it derives the salt locally:
 
 ```
-fakeSalt = HMAC-SHA-256(SECRET_KEY, "parley/fake-auth-salt/v1" || 0x00 || username)[0:16]
+authSalt   = UTF-8("parley/auth/v1" || 0x00 || username)
+authSecret = PBKDF2-SHA-256(NFC(password), authSalt, 600000, 32)
 ```
 
-with the same shape and KDF version, so a caller cannot distinguish "unknown
-user" from "known user" by the response body. Timing and rate limits can still
-leak information; the server should rate-limit per IP and username.
+There is no `/auth/params` endpoint in the MVP and no auth salt is stored on the
+server. Deriving the salt from the public username means the bcrypt hash alone is
+enough for offline password guessing. The client therefore enforces a password
+strength minimum (zxcvbn score >= 3) and the KDF cost is high; the device-only
+wrapped private key still prevents message decryption. See
+[THREAT_MODEL.md](THREAT_MODEL.md).
 
 ### 5.2 `POST /api/v1/auth/login`
 
@@ -199,22 +210,24 @@ Request:
 ```json
 {
   "username": "alice",
-  "auth_secret": "<base64 of 32-byte authSecret>"
+  "authSecret": "<base64 of 32-byte authSecret>"
 }
 ```
 
 Client steps before the request:
 
 1. Normalize the password to NFC.
-2. Derive `authSecret` from the password, the returned `auth_salt`, and the
+2. Derive `authSecret` from the password, the username-derived salt, and the
    `"parley/auth/v1"` label.
 3. Send only `authSecret`; the password never leaves the device.
 
 Server behavior:
 
-1. Look up the user. If the user does not exist, verify against a fixed dummy
-   bcrypt hash so the response time is similar, then return a generic `401`.
-2. bcrypt-verify the decoded `auth_secret` against the stored hash.
+1. Look up the user. If the user does not exist, verify the supplied base64 text
+   against a fixed dummy bcrypt hash so the response time is similar, then return
+   a generic `401`.
+2. bcrypt-verify the base64 text of `authSecret` against the stored hash. Do not
+   hash the decoded bytes.
 3. On success, create a session and set cookies.
 4. Return the user object (not the wrapped key, because the server does not have
    one).
@@ -239,15 +252,19 @@ After a successful login the client:
   configurable for local HTTP development.
 - The API accepts only cookies, not an `Authorization: Bearer` header, to keep
   the token surface small.
-- Every state-changing request must have an `Origin` header in the configured
-  allowlist. This, plus `SameSite=Lax`, is the CSRF defense. A dedicated
-  origin (not a shared subdomain) is required.
+- **Origin check for state-changing requests.** Every `POST`, `PUT`, `PATCH`, and
+  `DELETE` request must carry an `Origin` header in the configured allowlist;
+  missing or disallowed origins are rejected with `403`. This, plus
+  `SameSite=Lax`, is the CSRF defense. A dedicated origin (not a shared
+  subdomain) is required.
 - `POST /api/v1/auth/refresh` rotates the refresh token. If the presented token
   matches a revoked/rotated session, revoke all sessions for that user; treat it
   as a theft signal.
 - `POST /api/v1/auth/logout` revokes the current session and deletes both
   cookies.
-- `GET /api/v1/auth/me` returns the current user's id, username, and public key.
+- Registration and login are rate-limited in process. The limiter is per worker,
+  not shared across processes or hosts; a multi-worker deployment needs a shared
+  limiter.
 
 Passwords cannot be changed in the MVP. A password change would require
 re-deriving both secrets and re-wrapping the local key; a reset cannot restore
@@ -255,17 +272,18 @@ history because the server has no copy of the key. See section 14.
 
 ## 6. Public-key lookup and trust-on-first-use pinning
 
-### 6.1 `GET /api/v1/keys/{username}`
+### 6.1 `GET /api/v1/users/{username}/key`
 
 Requires a session. Returns:
 
 ```json
 {
   "username": "bob",
-  "public_key": "<base64 32 bytes>",
-  "kdf_version": 1
+  "public_key": "<base64 32 bytes>"
 }
 ```
+
+An unknown username returns `404`.
 
 The server has no contact list beyond message rows. It does not receive the
 client's pins or verification state.
@@ -355,12 +373,13 @@ tampered client.
    ```
    `crypto_box_easy` returns the 16-byte authenticator followed by the
    ciphertext.
-5. Generate `client_message_id` as a UUID v4 for idempotent retries.
-6. Persist the sent record locally with the recipient public key used, nonce,
+5. Persist the sent record locally with the recipient public key used, nonce,
    ciphertext, id, and timestamp.
-7. `POST /api/v1/messages` (section 8.2). On network failure, retry with the same
-   `client_message_id`; do not re-encrypt unless the recipient key changed
-   (which is blocked until acknowledged).
+6. `POST /api/v1/messages` (section 8.2). On network failure, retry with the same
+   nonce and ciphertext; do not re-encrypt unless the recipient key changed
+   (which is blocked until acknowledged). The MVP has no server-side idempotency
+   key, so a retry can create a duplicate row; the client deduplicates by
+   message id.
 
 The sender can decrypt their own sent message later:
 
@@ -378,30 +397,28 @@ Request:
 
 ```json
 {
-  "to": "bob",
+  "recipient": "bob",
   "nonce": "<base64 24 bytes>",
   "ciphertext": "<base64>",
-  "client_message_id": "<uuid v4>"
+  "client_ts": "2026-01-01T00:00:00Z"
 }
 ```
 
 Server behavior:
 
 1. Require a session and derive the sender from it.
-2. Validate `to` exists, is not the sender, and matches the username rules.
+2. Validate `recipient` exists, is not the sender, and matches the username
+   rules.
 3. Decode and validate `nonce` is exactly 24 bytes.
-4. Decode and validate `ciphertext`: at least 16 bytes (the authenticator) and at
-   most 16,384 bytes (16 KiB plaintext + 16-byte authenticator). Reject invalid
-   base64.
-5. Enforce per-sender rate and size limits.
-6. Insert an opaque row. If `(sender_id, client_message_id)` already exists,
-   return the existing row instead of inserting a duplicate.
-7. Return `201`:
+4. Decode and validate `ciphertext` is valid base64 and at most 65,536 bytes
+   (64 KiB) decoded. The server does not enforce a minimum, does not inspect the
+   authenticator, and never parses the body. Reject invalid base64.
+5. Insert `nonce`, `ciphertext`, and `client_ts` as opaque data.
+6. Return `201`:
 
 ```json
 {
   "id": "<uuid>",
-  "seq": 123,
   "created_at": "2026-01-01T00:00:00Z"
 }
 ```
@@ -409,29 +426,33 @@ Server behavior:
 The server never receives a plaintext length field, a subject, a preview, or a
 message type. The ciphertext length implies an approximate plaintext length.
 
-### 8.3 `GET /api/v1/messages?after=<seq>&limit=100`
+### 8.3 `GET /api/v1/messages/inbox?after=<cursor>`
 
-Returns messages addressed to the current user, ordered by ascending `seq`:
+Returns messages addressed to the current user, ordered by ascending
+`(created_at, id)`:
 
 ```json
 {
   "messages": [
     {
       "id": "<uuid>",
-      "seq": 123,
-      "from": "alice",
+      "sender": "alice",
+      "recipient": "bob",
       "nonce": "<base64 24 bytes>",
       "ciphertext": "<base64>",
-      "created_at": "2026-01-01T00:00:00Z"
+      "client_ts": "2026-01-01T00:00:00Z",
+      "created_at": "2026-01-01T00:00:00Z",
+      "acked_at": null
     }
   ],
-  "next_cursor": 123
+  "next_cursor": "<opaque cursor>"
 }
 ```
 
-`after` is the highest `seq` the client has processed; omit it for the first
-poll. `limit` defaults to 100 and is capped at 100. `next_cursor` is the highest
-returned `seq` (or the input `after` if empty).
+The page size is fixed at 100. `after` is the opaque `next_cursor` from the
+previous page; omit it for the first poll. The server returns only messages where
+the current user is the recipient. If no messages match, `next_cursor` is the
+input cursor or `null`.
 
 Client behavior:
 
@@ -443,17 +464,24 @@ Client behavior:
 5. If decryption fails, show an authentication warning; do not display
    ciphertext as plaintext.
 
-### 8.4 `GET /api/v1/messages/sent?after=<seq>&limit=100`
+### 8.4 `GET /api/v1/messages/sent?after=<cursor>`
 
-Returns messages sent by the current user, in the same shape with `to` instead
-of `from`. This lets the sender decrypt their own history after a reload using
-the locally stored recipient public key. The server does not return plaintext or
-the recipient's private data.
+Returns messages sent by the current user, in the same shape, ordered by
+ascending `(created_at, id)`. This lets the sender decrypt their own history
+after a reload using the locally stored recipient public key. The server does not
+return plaintext or the recipient's private data.
 
-### 8.5 Polling transport
+### 8.5 `POST /api/v1/messages/{id}/ack`
 
-- The client polls `GET /messages?after=<cursor>` every 5 seconds while the tab
-  is visible, with 0–1 seconds of random jitter.
+The recipient marks a delivered message as acknowledged. Only the recipient may
+call it; any other authenticated user receives `403`, and an unknown message
+returns `404`. The operation is idempotent and returns the message id and
+`acked_at`.
+
+### 8.6 Polling transport
+
+- The client polls `GET /messages/inbox?after=<cursor>` every 5 seconds while the
+  tab is visible, with 0–1 seconds of random jitter.
 - On errors, use exponential backoff from 5 seconds to 60 seconds.
 - Pause polling when the document is hidden; poll immediately on visibility
   resume.
@@ -468,16 +496,17 @@ the recipient's private data.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/health` | No | Liveness |
-| `GET` | `/api/v1/auth/params` | No | Public KDF salt/version for a username |
 | `POST` | `/api/v1/auth/register` | No | Create account and session |
 | `POST` | `/api/v1/auth/login` | No | Verify `authSecret` and create session |
 | `POST` | `/api/v1/auth/refresh` | Refresh cookie | Rotate refresh token |
 | `POST` | `/api/v1/auth/logout` | Access cookie | Revoke session and clear cookies |
-| `GET` | `/api/v1/auth/me` | Access cookie | Current user |
-| `GET` | `/api/v1/keys/{username}` | Access cookie | Public key lookup |
+| `GET` | `/api/v1/users/{username}/key` | Access cookie | Public key lookup |
 | `POST` | `/api/v1/messages` | Access cookie | Store opaque ciphertext |
-| `GET` | `/api/v1/messages` | Access cookie | Inbound ciphertext, cursor paginated |
+| `GET` | `/api/v1/messages/inbox` | Access cookie | Inbound ciphertext, cursor paginated |
 | `GET` | `/api/v1/messages/sent` | Access cookie | Outbound ciphertext, cursor paginated |
+| `POST` | `/api/v1/messages/{id}/ack` | Access cookie | Recipient acknowledges a message |
+
+All state-changing requests also require an allowed `Origin` header.
 
 All error responses use a generic body:
 
@@ -485,8 +514,8 @@ All error responses use a generic body:
 { "detail": "Invalid credentials" }
 ```
 
-The login and params endpoints must not reveal whether a username exists through
-their body. Registration necessarily does.
+The login endpoint must not reveal whether a username exists through its body.
+Registration necessarily does.
 
 ## 10. Server data model
 
@@ -494,9 +523,7 @@ their body. Registration necessarily does.
 users
   id                  uuid primary key
   username            text unique, lowercase ASCII
-  auth_secret_hash    bcrypt hash of authSecret
-  auth_salt           bytea(16)
-  kdf_version         smallint
+  auth_hash           bcrypt hash of the base64 text of authSecret
   public_key          bytea(32)
   created_at          timestamptz
 
@@ -505,27 +532,32 @@ sessions
   user_id             uuid references users
   refresh_token_hash  bytea(32) unique
   created_at          timestamptz
-  last_used_at        timestamptz
   expires_at          timestamptz
-  revoked_at          timestamptz null
+  revoked             boolean
 
 messages
   id                  uuid primary key
-  seq                 bigserial unique
   sender_id           uuid references users
   recipient_id        uuid references users
   nonce               bytea(24)
   ciphertext          bytea
-  client_message_id   uuid
+  client_ts           timestamptz
   created_at          timestamptz
-  unique (sender_id, client_message_id)
-  index (recipient_id, seq)
-  index (sender_id, seq)
+  acked_at            timestamptz null
+  index (recipient_id, created_at, id)
+  index (sender_id, created_at, id)
 ```
 
-There is no table for private keys, wrapped keys, recovery bundles, contact
-pins, safety numbers, message plaintext, or message previews. The server does not
-store `authSecret` after hashing it, and must not log it.
+There is no auth-salt column: the auth salt is public and derived from the
+username. There is no `seq` or `client_message_id` column in the MVP; pagination
+uses the opaque `(created_at, id)` cursor. There is no table for private keys,
+wrapped keys, recovery bundles, contact pins, safety numbers, message plaintext,
+or message previews. The server does not store `authSecret` after hashing it, and
+must not log it.
+
+The MVP creates the schema with `Base.metadata.create_all` at startup. Migrations
+are deferred until the first schema change; this is not a production migration
+strategy.
 
 Operational requirements:
 
@@ -534,7 +566,9 @@ Operational requirements:
 - Do not log request bodies, cookies, `authSecret`, message contents, or
   ciphertext in application logs. Access logs may contain IP, time, path, and
   status.
-- Rate-limit registration, login, key lookups, sends, and polls.
+- Rate-limit registration and login. The MVP limiter is an in-process counter:
+  it is per worker and resets on restart, so a multi-worker deployment needs a
+  shared store. Key lookups, sends, and polls still need limits.
 - Enforce a maximum request body size at the proxy and application layers.
 - Back up the database securely; backups contain ciphertext and metadata, not
   plaintext.
@@ -550,21 +584,27 @@ Operational requirements:
   also have the device's IndexedDB record. Without that record, the password does
   not decrypt server-side data.
 - **Server compromise:** the attacker gets usernames, public keys, bcrypt hashes,
-  auth salts, the contact graph, timestamps, ciphertext sizes, nonces, and
-  ciphertext. They still need a client's private key (or a password plus that
-  client's wrapped record) to decrypt. They can also serve modified client code,
-  which defeats the model on the next visit.
+  the contact graph, timestamps, ciphertext sizes, nonces, and ciphertext. The
+  public username-derived salt lets them test password guesses offline against
+  the bcrypt hash, recovering `authSecret` and possibly the password. They still
+  need the device-only wrapped private key to decrypt messages. They can also
+  serve modified client code, which defeats the model on the next visit.
 - **Device compromise:** while unlocked, the attacker has the vault. While
-  locked, a weak password can be guessed offline from the wrapped record.
+  locked, the device's wrapped private-key record can be attacked offline with
+  password guesses; the server hash is not needed for that local attack.
+- **Offline guessing mitigation:** the client enforces zxcvbn score >= 3 before
+  allowing a password, and PBKDF2 runs at 600,000 iterations. Neither makes a
+  weak password safe, and bcrypt cost 12 is the final server-side slowdown.
 
 ## 12. Message validation rules
 
 - Nonce: exactly 24 bytes after base64 decode.
-- Ciphertext: at least 16 bytes (empty plaintext is allowed and produces a
-  16-byte authenticator) and at most 16,400 bytes.
-- `client_message_id`: UUID v4 string; idempotency key scoped to the sender.
-- `to`: a valid existing username, not the sender.
-- Plaintext: the client should reject an encoded plaintext larger than 16 KiB
+- Ciphertext: valid standard base64, at most 65,536 bytes decoded. The server
+  does not enforce a minimum and does not inspect the body.
+- `client_ts`: ISO 8601 timestamp; the server stores it as supplied (normalized
+  to UTC) and does not use it for ordering.
+- `recipient`: a valid existing username, not the sender.
+- Plaintext: the client should reject an encoded plaintext larger than 64 KiB
   before encrypting.
 - Base64: standard alphabet with padding; reject non-canonical encodings where
   practical.
@@ -597,8 +637,11 @@ Before claiming the design works:
 - **Metadata hiding.** No sealed sender, padding, cover traffic, or mixing.
 - **Multi-device / key sync.** The private key is local to one browser profile.
 - **Key recovery / escrow.** No recovery key, no server-side wrapped copy.
-- **Password change/reset.** Not implemented. A reset cannot restore history;
-  the correct user experience is to be explicit about permanent loss.
+- **Password change/reset.** Not implemented. Parley has no reset and no
+  recovery by design. A future password change would require re-wrapping the
+  private key locally with the new `wrapKey` and issuing a new `authSecret` in one
+  atomic, client-driven step; a server-only password reset cannot restore
+  history.
 - **Group chat.** Not in scope.
 - **Attachments.** Not in scope; they would need their own streaming encryption
   design.
@@ -610,3 +653,13 @@ Before claiming the design works:
   modified JavaScript can steal keys and plaintext.
 - **Audit and formal verification.** None. This is a portfolio design and must
   not be represented as production-grade for high-risk users.
+
+## 15. Roadmap
+
+- **Argon2id via libsodium** for password-based derivation, replacing Web Crypto
+  PBKDF2 once browser support and deployment constraints allow it. Argon2id is
+  memory-hard; PBKDF2 at 600,000 iterations is the current interoperable choice.
+- A shared, cross-process rate limiter.
+- Reviewed database migrations.
+- A locally re-wrapped private key plus new `authSecret` for password changes,
+  as one atomic client-driven operation.

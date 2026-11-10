@@ -69,8 +69,9 @@ Everything else is explicitly out of scope or a known limitation.
   database alone.
 - **Can still do:** withhold, delay, reorder, duplicate, or drop ciphertext;
   deny service; retain data after deletion requests; attempt offline guessing of
-  `authSecret` from the bcrypt hash. Because it does not hold a wrapped private
-  key, guessing `authSecret` alone does not decrypt messages.
+  `authSecret` from the bcrypt hash using the public username-derived salt.
+  Because it does not hold a wrapped private key, guessing `authSecret` alone
+  does not decrypt messages.
 - **Important boundary:** the server also serves the JavaScript. An
   honest-but-curious server that is later compromised, or a server operator who
   changes the served code, becomes the malicious-server case. End-to-end
@@ -144,8 +145,9 @@ Everything else is explicitly out of scope or a known limitation.
 
 - Usernames and account creation times.
 - Public keys and public-key changes.
-- `authSalt` and a bcrypt hash of `authSecret` (not `authSecret` itself after
-  the request completes, unless the server logs request bodies).
+- A bcrypt hash of the base64 text of `authSecret` (not `authSecret` itself
+  after the request completes, unless the server logs request bodies). The
+  `authSecret` salt is public: it is derived from the username.
 - Who sends to whom (sender and recipient ids), message timestamps, and message
   counts.
 - Nonce and ciphertext sizes. Parley does not pad messages, so ciphertext length
@@ -168,17 +170,25 @@ Everything else is explicitly out of scope or a known limitation.
 
 ### Offline guessing boundary
 
-The server stores `authSalt` and `bcrypt(authSecret)`. If `authSecret` were a
-low-entropy value, the bcrypt hash would permit offline guessing; it is a
-310,000-iteration PBKDF2 output of the password, so the attacker is effectively
-guessing the password, slowed by both PBKDF2 and bcrypt. Without the client's
-wrapped private key, a successful guess of `authSecret` still does not yield the
-private key.
+The server stores `bcrypt(authSecret)`. The `authSecret` salt is public and
+derived from `UTF-8("parley/auth/v1" || 0x00 || username)`, so offline guessing
+needs **only** the stored bcrypt hash plus the username. Given a candidate
+password, an attacker derives `authSecret` with PBKDF2-HMAC-SHA-256 at 600,000
+iterations, base64-encodes it, and bcrypt-compares the result. Recovering
+`authSecret` lets the attacker authenticate to the server as that user; it does
+**not** decrypt message content.
 
-If an attacker obtains **both** a copy of the client's IndexedDB wrapped-key
-record and the server's `authSalt`/hash, the attacker can guess the password,
-derive `wrapKey`, and unwrap the private key. This is inherent to password-based
-key wrapping. A strong, unique password is part of the security contract.
+Message decryption additionally requires the device-only wrapped private-key
+record from IndexedDB, because the server never receives that record or the
+wrapped key. A server-database compromise therefore permits offline password
+guessing but not message decryption. If the attacker also obtains the device
+blob, a guessed password yields `wrapKey` and the private key, and message
+content follows. This is inherent to password-based key wrapping.
+
+Mitigations: the client enforces a password-strength minimum of zxcvbn score
+>= 3 and uses a high KDF cost (600,000 PBKDF2 iterations), and the server stores
+only a bcrypt cost-12 hash. Neither mitigation makes a weak or reused password
+safe. A strong, unique password remains part of the security contract.
 
 ## 5. Trust assumptions
 
@@ -192,7 +202,8 @@ key wrapping. A strong, unique password is part of the security contract.
    correct and not backdoored. Dependency integrity and update review are
    operational responsibilities.
 5. The user's browser, OS, and extensions are not compromised.
-6. The user chooses a strong unique password and protects the device.
+6. The client enforces a zxcvbn score >= 3, the user chooses a strong unique
+   password, and the user protects the device.
 7. The user compares safety numbers out of band when identity assurance matters.
 8. Usernames are unique and registration is controlled enough to limit
    impersonation and spam.
@@ -232,8 +243,7 @@ key wrapping. A strong, unique password is part of the security contract.
 - **No anonymity.** Usernames and IP addresses are visible to the server.
 - **No spam prevention beyond rate limits.**
 - **No password policy enforcement on the server.** The server never sees the
-  password; the client must enforce a minimum length and warn about weak
-  passwords.
+  password; the client enforces zxcvbn score >= 3 before derivation.
 - **No quantum resistance.**
 - **No secure hardware key storage.** The wrapped key is ordinary IndexedDB
   data, not protected by a secure enclave.
@@ -246,10 +256,10 @@ key wrapping. A strong, unique password is part of the security contract.
   numbers mitigate it only after out-of-band verification.
 - A stolen device with a weak password is likely to lose message history.
 - A server that serves malicious JavaScript defeats the design.
-- Username enumeration and traffic analysis are not fully addressed. The
-  `GET /auth/params` endpoint should return a synthetic salt for unknown
-  usernames so responses are indistinguishable, but timing and rate limits can
-  still leak information.
+- Username enumeration and traffic analysis are not fully addressed. Login uses
+  a dummy bcrypt verification for unknown usernames and a generic error body, but
+  timing and rate limits can still leak information; registration necessarily
+  reveals whether a username is taken.
 - There is no protocol for key rotation, account deletion, or device migration.
   These need explicit designs before they are claimed.
 - `authSecret` is a bearer credential. A server that logs it can authenticate as

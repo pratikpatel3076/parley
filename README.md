@@ -18,9 +18,10 @@ inherit.
 Parley is intended to be a browser-based messenger where:
 
 - each identity has a libsodium box keypair generated on the device;
-- a password derives two independent secrets: `wrapKey` (stays local) and
-  `authSecret` (sent to the server for bcrypt hashing);
-- the private key is wrapped with `wrapKey` using PBKDF2-HMAC-SHA-256 (310,000
+- a password derives two domain-separated secrets: `wrapKey` (stays local, random
+  device-only salt) and `authSecret` (sent to the server for bcrypt hashing,
+  public username-derived salt);
+- the private key is wrapped with `wrapKey` using PBKDF2-HMAC-SHA-256 (600,000
   iterations) and AES-256-GCM, and stored only in IndexedDB;
 - messages are encrypted with `crypto_box_easy` and stored by the server as
   opaque base64 nonce + ciphertext;

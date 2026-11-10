@@ -186,15 +186,20 @@ not enforced by the protocol. **This is a weakness Parley must not inherit.**
 Parley's contrast, specified in `docs/PROTOCOL.md`:
 
 - The server never receives the raw password or `wrapKey`.
-- The client derives two independent secrets with independent salts and domain
-  labels: `wrapKey` (stays local) and `authSecret` (sent for bcrypt hashing).
+- The client derives two independent secrets with domain-separated inputs:
+  `wrapKey` (stays local, random `wrapSalt`) and `authSecret` (sent for bcrypt
+  hashing, public username-derived salt).
 - The private key is wrapped with `wrapKey` and stored only in IndexedDB. The
-  server never receives the wrapped private key, so the server cannot mount an
-  offline guess against it even if it later loses its database.
-- Residual risk: if an attacker obtains both a copy of the client's IndexedDB
-  wrapped-key record and the server's bcrypt hash/salt, the password can still
-  be guessed offline. This is inherent to password-wrapped keys and is called
-  out in `docs/THREAT_MODEL.md`.
+  server never receives the wrapped private key, so a server-database compromise
+  alone cannot decrypt message content.
+- Residual risk: offline password guessing needs only the server's stored
+  `bcrypt(authSecret)` hash plus the public username-derived salt. An attacker
+  derives `authSecret` from each guess and bcrypt-compares it, recovering a weak
+  password and `authSecret`. That does not decrypt messages. Decrypting
+  additionally requires the device-only IndexedDB wrapped-key record, because
+  the server never has it. Mitigation: the client enforces zxcvbn score >= 3 and
+  the KDF uses 600,000 PBKDF2-HMAC-SHA-256 iterations. This is inherent to
+  password-wrapped keys and is called out in `docs/THREAT_MODEL.md`.
 
 ---
 
@@ -392,13 +397,14 @@ backend/
 
 - **Password handling: raw password → `authSecret` only.** The client derives an independent authentication secret and never sends the password, which removes Jotter's critical server-side key-derivation path.
 - **One PBKDF2 key → two domain-separated keys with independent salts.** `wrapKey` and `authSecret` cannot be substituted for each other, and only `authSecret` leaves the device.
-- **Server-stored wrapped master key → device-only wrapped private key.** The private key is wrapped with `wrapKey` and stored only in IndexedDB, so a server breach does not expose a wrapped key to guess against.
+- **Server-stored wrapped master key → device-only wrapped private key.** The private key is wrapped with `wrapKey` and stored only in IndexedDB, so a server breach does not expose a wrapped key to guess against. The server's bcrypt auth hash and the public username-derived salt still permit offline password guessing, but not message decryption.
 - **AES-GCM note encryption → libsodium `crypto_box_easy` for messages.** 1:1 messaging needs public-key encryption; the messaging layer does not invent a construction.
 - **Random AES master key per account → libsodium box keypair per account.** The keypair is the messaging identity and is generated on the client.
 - **Server-stored recovery bundle → no recovery bundle.** Parley explicitly does not offer key recovery, so it does not store a second copy of the key material.
-- **Password reset/change without re-wrapping → documented as unsupported.** Parley will not ship a reset flow that silently makes history undecryptable.
-- **One salt and no context labels → independent salts and versioned domain labels.** Prevents cross-protocol key reuse and makes the KDF inputs explicit.
-- **Bcrypt over the password → bcrypt over a 32-byte `authSecret`.** The server never sees a password, and the bcrypt 72-byte truncation is irrelevant.
+- **Password reset/change without re-wrapping → no reset and no recovery by design.** Verified static trace: Jotter's reset endpoint updates only the bcrypt hash at `backend/app/api/v1/auth.py:284`, and `change-password` does the same at `:295-305`; neither re-wraps the master key or updates `encrypted_master_key`/`kdf_salt`. The recovery key is collected and ignored, and `recoverMasterKey` in `frontend/src/crypto/encryption.ts` has no call sites. As a result, login after a reset still authenticates but the client cannot unwrap the old master key, so synced notes become unreadable. This finding was established by static trace and is tracked in the Jotter issue tracker (https://github.com/pratikpatel3076/Jotter/issues). Parley therefore has no reset and no recovery. A future password change would require re-wrapping the private key locally and issuing a new `authSecret` in one atomic client-driven step.
+- **One salt and no context labels → independent salts and versioned domain labels.** `wrapKey` uses a random device-only `wrapSalt`; `authSecret` uses the public `"parley/auth/v1"` label plus the username. This prevents cross-protocol key reuse and makes the KDF inputs explicit.
+- **PBKDF2 iterations 310,000 → 600,000.** Current OWASP guidance for PBKDF2-HMAC-SHA-256 is 600,000 iterations; Parley uses that count for both `wrapKey` and `authSecret`.
+- **Bcrypt over the password → bcrypt over the base64 text of `authSecret`.** The base64 text is 44 ASCII characters, below bcrypt's 72-byte limit; the server never sees a password, and it never hashes the raw decoded bytes.
 - **Hardcoded CORS origin list → environment-driven allowlist.** Deployment origins differ from development origins.
 - **`create_all` plus swallowed `ALTER TABLE` errors → explicit migrations when schema work starts.** The scaffold keeps `create_all` for the empty dev database but does not treat it as a migration strategy.
 - **SQLite/MySQL split → SQLite-first development.** Removes a database service from the first milestone while keeping the async SQLAlchemy API.
@@ -423,5 +429,5 @@ backend/
 - **Placeholder `SECRET_KEY` values accepted at boot.** A known placeholder is a de facto fallback secret; Parley rejects it.
 - **`create_all`-driven schema upgrades with swallowed errors.** Schema changes need review and a real migration path.
 - **Plaintext task/calendar fields presented under a zero-knowledge banner.** Parley scopes its claims to what it actually encrypts.
-- **Silent bcrypt 72-byte truncation.** `authSecret` is fixed-length and hashed as opaque bytes.
+- **Silent bcrypt 72-byte truncation.** `authSecret` is fixed-length, and its 44-character base64 text is hashed, not raw variable-length password bytes.
 - **Unused recovery helpers and dead `master-key` API surface.** Dead security code is a maintenance and audit liability.
