@@ -87,3 +87,70 @@ def test_settings_reject_wildcard_origin(monkeypatch) -> None:
         Settings(_env_file=None)
 
     assert "wildcard" in str(exc_info.value).lower()
+
+
+def test_settings_reject_origin_with_a_path(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-" + "x" * 48)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+    monkeypatch.setenv(
+        "ALLOWED_ORIGINS",
+        '["https://app.example.com/login"]',
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "exact origins" in str(exc_info.value)
+
+
+def test_settings_reject_origin_with_trailing_slash(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-" + "x" * 48)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+    monkeypatch.setenv("ALLOWED_ORIGINS", '["https://app.example.com/"]')
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_settings_reject_non_hs256_algorithm(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-" + "x" * 48)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+    monkeypatch.setenv("ALGORITHM", "HS512")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "HS256" in str(exc_info.value)
+
+
+def test_settings_reject_access_token_lifetime_over_15_minutes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-" + "x" * 48)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+    monkeypatch.setenv("ACCESS_TOKEN_EXPIRE_MINUTES", "16")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "15" in str(exc_info.value)
+
+
+def test_settings_accept_15_minute_access_lifetime(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-" + "x" * 48)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+    monkeypatch.setenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.ACCESS_TOKEN_EXPIRE_MINUTES == 15
+
+
+def test_settings_refresh_lifetime_is_configurable(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-" + "x" * 48)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+    monkeypatch.setenv("REFRESH_TOKEN_EXPIRE_DAYS", "7")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.REFRESH_TOKEN_EXPIRE_DAYS == 7

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -64,11 +65,52 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL must be a non-empty connection string.")
         return value
 
+    @field_validator("ALGORITHM")
+    @classmethod
+    def validate_algorithm(cls, value: str) -> str:
+        if value != "HS256":
+            raise ValueError("ALGORITHM must be HS256.")
+        return value
+
+    @field_validator("ACCESS_TOKEN_EXPIRE_MINUTES")
+    @classmethod
+    def validate_access_token_lifetime(cls, value: int) -> int:
+        if not 1 <= value <= 15:
+            raise ValueError(
+                "ACCESS_TOKEN_EXPIRE_MINUTES must be between 1 and 15."
+            )
+        return value
+
+    @field_validator("REFRESH_TOKEN_EXPIRE_DAYS")
+    @classmethod
+    def validate_refresh_token_lifetime(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("REFRESH_TOKEN_EXPIRE_DAYS must be at least 1.")
+        return value
+
     @field_validator("ALLOWED_ORIGINS")
     @classmethod
     def validate_allowed_origins(cls, value: list[str]) -> list[str]:
-        if any("*" in origin for origin in value):
-            raise ValueError("ALLOWED_ORIGINS must not contain wildcards.")
+        for origin in value:
+            if "*" in origin:
+                raise ValueError("ALLOWED_ORIGINS must not contain wildcards.")
+            parts = urlsplit(origin)
+            canonical = f"{parts.scheme}://{parts.netloc}"
+            if (
+                parts.scheme not in {"http", "https"}
+                or not parts.netloc
+                or parts.path
+                or parts.query
+                or parts.fragment
+                or parts.username
+                or parts.password
+                or origin != canonical
+            ):
+                raise ValueError(
+                    "ALLOWED_ORIGINS entries must be exact origins with "
+                    "scheme, host, and optional port, and no path "
+                    "(for example https://app.example.com)."
+                )
         return value
 
     @model_validator(mode="after")

@@ -130,6 +130,12 @@ Everything else is explicitly out of scope or a known limitation.
 - **Residual:** usernames are public identifiers; a user can be messaged by
   anyone who knows the username unless the product adds blocking/allow-lists
   (not in the MVP).
+- **Accepted username enumeration:** any client can learn whether a username
+  exists. Registration returns `409` for a taken name, and the authenticated
+  key directory returns `404` for an unknown name and the public key for a known
+  one. This is an accepted property of a public username registry, not a
+  vulnerability; it supports contact discovery and pre-registration checks. The
+  key directory still requires a session.
 
 ### 3.6 Local attackers and client-side compromise
 
@@ -208,9 +214,9 @@ safe. A strong, unique password remains part of the security contract.
 7. The user compares safety numbers out of band when identity assurance matters.
 8. Usernames are unique and registration is controlled enough to limit
    impersonation and spam.
-9. The server does not log request bodies, cookies, `authSecret`, or message
-   contents. This is a policy and implementation requirement, not a cryptographic
-   guarantee.
+9. The server does not log request bodies, cookies, `Authorization`-like
+   headers, `authSecret`, or message contents. This is a policy and
+   implementation requirement, not a cryptographic guarantee.
 
 ## 6. Non-goals and explicit limitations
 
@@ -268,7 +274,13 @@ safe. A strong, unique password remains part of the security contract.
   without the private key.
 - Message ordering, duplicate delivery, replay, and retention are transport
   concerns. The MVP deduplicates by message id and tolerates reordering, but it
-  does not claim exactly-once delivery.
+  does not claim exactly-once delivery. Send retries are idempotent only when
+  the client reuses the same `client_message_id` with an identical payload.
+- Rate limits key on the direct client IP. `X-Forwarded-For` is not trusted by
+  default because a client can forge it. A deployment behind a reverse proxy
+  would need an explicit trusted-proxy configuration, which the MVP does not
+  implement; until then every client behind such a proxy could appear to share
+  one bucket and one client could exhaust it for others.
 - The safety number proves both parties see the same two public keys; it does
   not prove the keys belong to the humans the usernames suggest.
 

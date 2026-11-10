@@ -10,6 +10,15 @@ from app.core.config import settings
 from app.db.database import engine, init_db
 
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+SENSITIVE_PATH_PREFIXES = ("/api/v1/auth", "/api/v1/messages")
+
+
+def _add_security_headers(path: str, response):
+    """Never let auth or message responses be stored by a browser or proxy."""
+    if path.startswith(SENSITIVE_PATH_PREFIXES):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @asynccontextmanager
@@ -62,14 +71,21 @@ app.add_middleware(
 
 @app.middleware("http")
 async def enforce_origin_for_state_changes(request: Request, call_next):
+    # Exact whole-origin equality against the allowlist. This deliberately does
+    # not use prefix, suffix, substring, or wildcard matching, and a missing
+    # Origin (or the literal "null") is never in the allowlist.
     if request.method in STATE_CHANGING_METHODS:
         origin = request.headers.get("origin")
         if origin not in settings.ALLOWED_ORIGINS:
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Origin not allowed"},
+            return _add_security_headers(
+                request.url.path,
+                JSONResponse(
+                    status_code=403,
+                    content={"detail": "Origin not allowed"},
+                ),
             )
-    return await call_next(request)
+    response = await call_next(request)
+    return _add_security_headers(request.url.path, response)
 
 
 app.include_router(health.router)
