@@ -6,12 +6,12 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthContext, get_auth_context
 from app.core.config import settings
 from app.core.rate_limit import login_limiter, register_limiter
 from app.core.security import (
     create_access_token,
     create_refresh_token,
+    decode_access_token,
     dummy_auth_hash,
     hash_auth_secret,
     hash_refresh_token,
@@ -24,6 +24,22 @@ from app.models import Session, User
 from app.schemas.auth import LoginRequest, RegisterRequest
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+ACCESS_COOKIE_PATH = "/"
+REFRESH_COOKIE_PATH = "/api/v1/auth"
+# No Domain attribute is set, so both cookies are host-only. The delete path
+# must mirror every attribute used when setting, or browsers keep the cookie.
+COOKIE_DOMAIN: str | None = None
+
+
+def _cookie_options(path: str) -> dict[str, object]:
+    return {
+        "path": path,
+        "domain": COOKIE_DOMAIN,
+        "secure": settings.COOKIE_SECURE,
+        "httponly": True,
+        "samesite": "lax",
+    }
 
 
 def _client_key(request: Request, scope: str) -> str:
@@ -60,36 +76,25 @@ def _set_auth_cookies(
         "parley_access",
         access_token,
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        path="/",
-        secure=settings.COOKIE_SECURE,
-        httponly=True,
-        samesite="lax",
+        **_cookie_options(ACCESS_COOKIE_PATH),
     )
+    # Path=/api/v1/auth covers both /refresh and /logout.
     response.set_cookie(
         "parley_refresh",
         refresh_token,
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86_400,
-        path="/api/v1/auth",
-        secure=settings.COOKIE_SECURE,
-        httponly=True,
-        samesite="lax",
+        **_cookie_options(REFRESH_COOKIE_PATH),
     )
 
 
 def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(
         "parley_access",
-        path="/",
-        secure=settings.COOKIE_SECURE,
-        httponly=True,
-        samesite="lax",
+        **_cookie_options(ACCESS_COOKIE_PATH),
     )
     response.delete_cookie(
         "parley_refresh",
-        path="/api/v1/auth",
-        secure=settings.COOKIE_SECURE,
-        httponly=True,
-        samesite="lax",
+        **_cookie_options(REFRESH_COOKIE_PATH),
     )
 
 
@@ -238,19 +243,38 @@ async def refresh(
 @router.post("/logout")
 async def logout(
     response: Response,
-    context: AuthContext = Depends(get_auth_context),
+    parley_access: str | None = Cookie(default=None),
     parley_refresh: str | None = Cookie(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    context.session.revoked = True
+    """Revoke what we can, clear both cookies, and never require a session.
+
+    Logout is idempotent: callers with no cookies, an expired access token, or
+    only a refresh cookie still get 200. A valid access token and a valid
+    refresh token are each resolved independently, so a refresh session is
+    revoked even when the access cookie is missing or expired.
+    """
+    revoked = False
+
+    if parley_access:
+        payload = decode_access_token(parley_access)
+        if payload is not None:
+            session = await db.get(Session, payload["sid"])
+            if session is not None and not session.revoked:
+                session.revoked = True
+                revoked = True
+
     if parley_refresh:
         stored = await db.scalar(
             select(Session).where(
                 Session.refresh_token_hash == hash_refresh_token(parley_refresh)
             )
         )
-        if stored is not None:
+        if stored is not None and not stored.revoked:
             stored.revoked = True
-    await db.commit()
+            revoked = True
+
+    if revoked:
+        await db.commit()
     _clear_auth_cookies(response)
     return {"status": "ok"}

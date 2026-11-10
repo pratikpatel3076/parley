@@ -1,6 +1,11 @@
+from datetime import datetime, timedelta, timezone
+
+import jwt
 import pytest
 
+from app.core.config import settings
 from support import (
+    TEST_COOKIE_DOMAIN,
     auth_cookies,
     auth_headers,
     b64,
@@ -285,6 +290,160 @@ def test_disallowed_origin_on_post_returns_403(client, origin: str | None) -> No
 
     assert response.status_code == 403
     assert response.json() == {"detail": "Origin not allowed"}
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        None,
+        "null",
+        "https://testserver.evil.test",
+        "https://eviltestserver",
+        "http://testserver",
+        "https://testserver:8443",
+        "https://testserver/",
+        "https://testserver:443",
+    ],
+)
+def test_origin_requires_an_exact_allowlist_match(
+    client, origin: str | None
+) -> None:
+    headers = {} if origin is None else {"Origin": origin}
+    response = client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": make_username(),
+            "authSecret": random_b64(32),
+            "publicKey": random_b64(32),
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Origin not allowed"}
+
+
+def test_exact_origin_match_is_accepted(client) -> None:
+    response, *_ = register(client, origin="https://testserver")
+
+    assert response.status_code == 201
+
+
+def test_get_requests_do_not_require_an_origin(client) -> None:
+    register(client)
+    client.cookies.clear()
+    register(client)
+    access, refresh = auth_cookies(client)
+    use_auth(client, access, refresh)
+
+    response = client.get("/api/v1/messages/inbox")
+
+    assert response.status_code == 200
+    assert "origin" not in {key.lower() for key in response.request.headers}
+
+
+def test_logout_without_cookies_succeeds_and_clears_both(client) -> None:
+    response = client.post("/api/v1/auth/logout", headers=auth_headers())
+
+    assert response.status_code == 200
+    headers = _cookie_headers(response)
+    assert any(header.startswith('parley_access=""') for header in headers)
+    assert any(header.startswith('parley_refresh=""') for header in headers)
+
+
+def test_logout_with_only_a_refresh_cookie_revokes_the_session(client) -> None:
+    register(client)
+    access, refresh = auth_cookies(client)
+    assert access and refresh
+
+    client.cookies.clear()
+    client.cookies.set(
+        "parley_refresh",
+        refresh,
+        domain=TEST_COOKIE_DOMAIN,
+        path="/api/v1/auth",
+    )
+
+    response = client.post("/api/v1/auth/logout", headers=auth_headers())
+    assert response.status_code == 200
+
+    use_auth(client, access, refresh)
+    assert client.get("/api/v1/messages/inbox").status_code == 401
+    assert (
+        client.post("/api/v1/auth/refresh", headers=auth_headers()).status_code
+        == 401
+    )
+
+
+def test_logout_with_expired_access_and_valid_refresh_revokes_it(client) -> None:
+    register(client)
+    access, refresh = auth_cookies(client)
+    assert access and refresh
+
+    payload = jwt.decode(
+        access,
+        settings.SECRET_KEY,
+        algorithms=["HS256"],
+    )
+    payload["exp"] = datetime.now(timezone.utc) - timedelta(seconds=5)
+    expired_access = jwt.encode(
+        payload,
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )
+
+    use_auth(client, expired_access, refresh)
+    response = client.post("/api/v1/auth/logout", headers=auth_headers())
+    assert response.status_code == 200
+
+    use_auth(client, access, refresh)
+    assert client.get("/api/v1/messages/inbox").status_code == 401
+    assert (
+        client.post("/api/v1/auth/refresh", headers=auth_headers()).status_code
+        == 401
+    )
+
+
+def test_origin_is_still_required_for_logout(client) -> None:
+    response = client.post("/api/v1/auth/logout")
+
+    assert response.status_code == 403
+
+
+def _cookie_attributes(header: str) -> dict[str, str]:
+    _, _, attributes = header.partition(";")
+    result: dict[str, str] = {}
+    for attribute in attributes.split(";"):
+        attribute = attribute.strip()
+        if not attribute:
+            continue
+        key, _, value = attribute.partition("=")
+        result[key.lower()] = value.lower()
+    return result
+
+
+def test_cookie_delete_attributes_match_set_attributes(client) -> None:
+    registered, *_ = register(client)
+    set_headers = _cookie_headers(registered)
+
+    logged_out = client.post("/api/v1/auth/logout", headers=auth_headers())
+    delete_headers = _cookie_headers(logged_out)
+
+    for name in ("parley_access", "parley_refresh"):
+        set_attributes = _cookie_attributes(_find_cookie(set_headers, name))
+        delete_attributes = _cookie_attributes(
+            _find_cookie(delete_headers, name)
+        )
+        for attribute in (
+            "path",
+            "domain",
+            "secure",
+            "httponly",
+            "samesite",
+        ):
+            assert set_attributes.get(attribute, "") == delete_attributes.get(
+                attribute, ""
+            ), f"{name} {attribute} differs between set and delete"
 
 
 def test_origin_check_covers_non_auth_state_changes(client) -> None:

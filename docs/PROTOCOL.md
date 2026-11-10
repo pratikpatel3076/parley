@@ -253,19 +253,30 @@ After a successful login the client:
 - Cookie names: `parley_access` and `parley_refresh`.
 - Flags: `HttpOnly`, `SameSite=Lax`, `Path=/` for access, and
   `Path=/api/v1/auth` for refresh. `Secure` is required in production; it may be
-  disabled only when `DEBUG=True` for local HTTP development.
+  disabled only when `DEBUG=True` for local HTTP development. No `Domain`
+  attribute is set, so both cookies are host-only. The refresh path deliberately
+  covers both `/api/v1/auth/refresh` and `/api/v1/auth/logout`. When a cookie is
+  deleted, the server uses exactly the same `Path`, `Domain`, `SameSite`,
+  `Secure`, and `HttpOnly` attributes that were used to set it; otherwise a
+  browser keeps the old cookie.
 - The API accepts only cookies, not an `Authorization: Bearer` header, to keep
   the token surface small.
 - **Origin check for state-changing requests.** Every `POST`, `PUT`, `PATCH`, and
-  `DELETE` request must carry an `Origin` header in the configured allowlist;
-  missing or disallowed origins are rejected with `403`. This, plus
-  `SameSite=Lax`, is the CSRF defense. A dedicated origin (not a shared
-  subdomain) is required.
+  `DELETE` request must carry an `Origin` header that matches one entry in the
+  configured allowlist by **exact whole-origin equality** (scheme + host +
+  port). There is no prefix, suffix, substring, or wildcard matching. A missing
+  `Origin` header or the literal value `null` is rejected with `403` on every
+  state-changing endpoint, including logout. Non-browser clients must therefore
+  send an explicit `Origin` header. This, plus `SameSite=Lax`, is the CSRF
+  defense. A dedicated origin (not a shared subdomain) is required.
 - `POST /api/v1/auth/refresh` rotates the refresh token. If the presented token
   matches a revoked/rotated session, revoke all sessions for that user; treat it
   as a theft signal.
-- `POST /api/v1/auth/logout` revokes the current session and deletes both
-  cookies.
+- `POST /api/v1/auth/logout` is idempotent and always returns `200`. It revokes
+  the session named by a valid access cookie and the session named by a valid
+  refresh cookie independently, so a valid refresh cookie is revoked even when
+  the access cookie is missing or expired. It always deletes both cookies and
+  never returns `401` for missing cookies.
 - Registration and login are rate-limited in process. The limiter is per worker,
   not shared across processes or hosts; a multi-worker deployment needs a shared
   limiter.
@@ -521,7 +532,7 @@ returns `404`. The operation is idempotent and returns the message id and
 | `POST` | `/api/v1/auth/register` | No | Create account and session |
 | `POST` | `/api/v1/auth/login` | No | Verify `authSecret` and create session |
 | `POST` | `/api/v1/auth/refresh` | Refresh cookie | Rotate refresh token |
-| `POST` | `/api/v1/auth/logout` | Access cookie | Revoke session and clear cookies |
+| `POST` | `/api/v1/auth/logout` | Optional access/refresh cookie | Revoke known sessions and clear cookies (idempotent) |
 | `GET` | `/api/v1/users/{username}/key` | Access cookie | Public key lookup |
 | `POST` | `/api/v1/messages` | Access cookie | Store opaque ciphertext |
 | `GET` | `/api/v1/messages/inbox` | Access cookie | Inbound ciphertext, cursor paginated |
