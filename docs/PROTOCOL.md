@@ -427,8 +427,9 @@ wrong contact, or a tampered client.
 
 1. Ensure the vault is unlocked and the recipient key is pinned (section 6).
 2. Generate one UUIDv4 `client_message_id` per logical message.
-3. Build the plaintext envelope (section 8.1.1) and encode it as UTF-8. The
-   client rejects a body longer than 60,000 UTF-8 bytes.
+3. Build the plaintext envelope (section 8.1.1), including the sender's and
+   recipient's public keys, and encode it as UTF-8. The client rejects a body
+   longer than 60,000 UTF-8 bytes.
 4. Generate a 24-byte nonce with `randombytes_buf(24)`.
 5. Encrypt the envelope, not the bare text:
    ```
@@ -463,6 +464,8 @@ The bytes handed to `crypto_box_easy` are a UTF-8 JSON object:
   "v": 1,
   "id": "<clientMessageId>",
   "ts": 1767225600000,
+  "from": "<sender public key, base64 32 bytes>",
+  "to": "<recipient public key, base64 32 bytes>",
   "body": "<text>"
 }
 ```
@@ -470,20 +473,43 @@ The bytes handed to `crypto_box_easy` are a UTF-8 JSON object:
 - `v` is the envelope version (`1`).
 - `id` is the same UUIDv4 sent as `client_message_id` to the server.
 - `ts` is the client send time in milliseconds since the Unix epoch.
+- `from` is the sender's 32-byte crypto_box public key as standard padded
+  base64. The client verifies that the supplied sender public key matches the
+  public key derived from the sender's secret key before encrypting.
+- `to` is the recipient's 32-byte crypto_box public key as standard padded
+  base64.
 - `body` is the UTF-8 message text. Empty text is allowed; more than 60,000
   UTF-8 bytes is rejected before encryption.
 
 After `crypto_box_open_easy`, the client must:
 
 1. Reject anything where `v !== 1` or the JSON shape is invalid.
-2. Reject anything where the inner `id` does not equal the outer
+2. Decode `from` and `to` as standard padded base64 and require exactly 32
+   bytes each.
+3. Require `from` to equal the sender public key used for the box (the pinned
+   contact key) and `to` to equal the caller's own public key. Compare decoded
+   bytes, not strings. Any mismatch is `EnvelopeMismatchError`.
+4. Reject anything where the inner `id` does not equal the outer
    `client_message_id` (`EnvelopeMismatchError`). This is what makes a server
    that moves ciphertext between message rows detectable.
-3. Only then display `body`.
+5. Only then display `body`.
 
-The envelope is authenticated by the AEAD, so a server cannot change `id`, `ts`,
-or `body` without failing decryption. A server can still drop, delay, duplicate,
-or reorder whole ciphertexts; see [THREAT_MODEL.md](THREAT_MODEL.md).
+**Why sender and recipient binding is required.** A crypto_box shared secret is
+symmetric in the two keypairs: the key for Alice-to-Bob is byte-identical to the
+key for Bob-to-Alice. Without names inside the authenticated plaintext, a
+malicious server could take a ciphertext Bob sent to Alice, present it to Bob as
+if Alice had sent it, and Bob's `crypto_box_open_easy(alicePublicKey,
+bobSecretKey)` would succeed. Bob would see his own old message attributed to
+Alice. The `from` and `to` fields are inside the AEAD-protected envelope, so the
+server cannot rewrite them. Requiring `from` to match the verified sender key
+and `to` to match the receiver's own key rejects that reflection, a redirect to
+a third user, and a replay of a message from a different conversation. The
+server can still drop, delay, duplicate, or reorder whole ciphertexts; see
+[THREAT_MODEL.md](THREAT_MODEL.md).
+
+The envelope is authenticated by the AEAD, so a server cannot change `id`,
+`ts`, `from`, `to`, or `body` without failing decryption or the post-decryption
+checks.
 
 ### 8.2 `POST /api/v1/messages`
 
@@ -744,6 +770,8 @@ Before claiming the design works:
 - [ ] A message round trip decrypts for the recipient.
 - [ ] A sender can decrypt their own sent message after reload.
 - [ ] A modified ciphertext fails authentication.
+- [ ] A ciphertext reflected to its sender, or redirected to a third user, is
+      rejected by the sender/recipient binding in the envelope.
 - [ ] A changed public key blocks sending until acknowledged.
 - [ ] Both parties compute the same safety number.
 - [ ] The server cannot decrypt a message from its database alone.

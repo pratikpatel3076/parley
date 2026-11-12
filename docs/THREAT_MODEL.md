@@ -92,17 +92,26 @@ Everything else is explicitly out of scope or a known limitation.
   reorder delivery; cause denials of service.
 - **Cannot:** forge a valid `crypto_box_easy` ciphertext for a pinned key without
   the sender's private key; decrypt ciphertext without obtaining keys; move a
-  ciphertext to a different `client_message_id` without detection.
+  ciphertext to a different `client_message_id` without detection; attribute a
+  message to a different sender or recipient. Because the authenticated envelope
+  names both public keys, a reflected ciphertext (Bob's own message presented as
+  Alice's) or a redirect to a third user fails `EnvelopeMismatchError` or
+  `DecryptionError`.
 - **Mitigations:**
   - Public keys are pinned on first contact; a changed key blocks sending.
   - Safety numbers can be compared out of band to detect substitution.
   - AEAD rejects modified ciphertext.
   - The encrypted v1 envelope carries the `client_message_id` as an
-    authenticated `id`. After decryption the client requires the inner `id` to
-    match the outer row id, so a server that swaps ciphertexts between rows is
-    detected (`EnvelopeMismatchError`).
+    authenticated `id`, plus the sender and recipient public keys. After
+    decryption the client requires the inner `id` to match the outer row id and
+    the decoded `from` / `to` bytes to match the expected sender and the
+    receiver's own key. This detects a server that swaps ciphertexts between
+    rows, reflects a message back to its sender, or redirects it to another
+    user (`EnvelopeMismatchError`).
   - Clients should require explicit user acknowledgement before accepting a new
     key.
+- **Can still do:** drop, delay, duplicate, or reorder whole ciphertexts; replay
+  an old ciphertext in the same conversation; cause denials of service.
 - **Hard limit:** if the server serves modified JavaScript, all client-side
   guarantees are void. There is no reproducible-build, code-signing, or
   transparency-log verification in this design. This is not a defense against a

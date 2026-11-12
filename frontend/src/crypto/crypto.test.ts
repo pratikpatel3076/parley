@@ -228,6 +228,7 @@ describe('message encryption', () => {
       plaintext: 'hello bob',
       clientMessageId,
       recipientPublicKey: bob.publicKey,
+      senderPublicKey: alice.publicKey,
       senderSecretKey: alice.secretKey,
     })
 
@@ -235,6 +236,7 @@ describe('message encryption', () => {
       ...encrypted,
       clientMessageId,
       senderPublicKey: alice.publicKey,
+      recipientPublicKey: bob.publicKey,
       recipientSecretKey: bob.secretKey,
     })
 
@@ -249,6 +251,7 @@ describe('message encryption', () => {
       plaintext: 'saved to sent history',
       clientMessageId,
       recipientPublicKey: bob.publicKey,
+      senderPublicKey: alice.publicKey,
       senderSecretKey: alice.secretKey,
     })
 
@@ -256,6 +259,7 @@ describe('message encryption', () => {
       ...encrypted,
       clientMessageId,
       recipientPublicKey: bob.publicKey,
+      senderPublicKey: alice.publicKey,
       senderSecretKey: alice.secretKey,
     })
 
@@ -268,6 +272,7 @@ describe('message encryption', () => {
       plaintext: 'opaque body',
       clientMessageId: crypto.randomUUID(),
       recipientPublicKey: bob.publicKey,
+      senderPublicKey: alice.publicKey,
       senderSecretKey: alice.secretKey,
     })
 
@@ -277,6 +282,7 @@ describe('message encryption', () => {
         ciphertext: tamper(encrypted.ciphertext),
         clientMessageId: crypto.randomUUID(),
         senderPublicKey: alice.publicKey,
+        recipientPublicKey: bob.publicKey,
         recipientSecretKey: bob.secretKey,
       }),
     ).rejects.toBeInstanceOf(DecryptionError)
@@ -289,6 +295,7 @@ describe('message encryption', () => {
       plaintext: 'for bob only',
       clientMessageId,
       recipientPublicKey: bob.publicKey,
+      senderPublicKey: alice.publicKey,
       senderSecretKey: alice.secretKey,
     })
 
@@ -297,6 +304,7 @@ describe('message encryption', () => {
         ...encrypted,
         clientMessageId,
         senderPublicKey: carol.publicKey,
+        recipientPublicKey: bob.publicKey,
         recipientSecretKey: bob.secretKey,
       }),
     ).rejects.toBeInstanceOf(DecryptionError)
@@ -308,6 +316,7 @@ describe('message encryption', () => {
       plaintext: 'id check',
       clientMessageId: crypto.randomUUID(),
       recipientPublicKey: bob.publicKey,
+      senderPublicKey: alice.publicKey,
       senderSecretKey: alice.secretKey,
     })
 
@@ -316,6 +325,7 @@ describe('message encryption', () => {
         ...encrypted,
         clientMessageId: crypto.randomUUID(),
         senderPublicKey: alice.publicKey,
+        recipientPublicKey: bob.publicKey,
         recipientSecretKey: bob.secretKey,
       }),
     ).rejects.toBeInstanceOf(EnvelopeMismatchError)
@@ -329,6 +339,7 @@ describe('message encryption', () => {
         plaintext: 'x'.repeat(MAX_PLAINTEXT_BYTES + 1),
         clientMessageId: crypto.randomUUID(),
         recipientPublicKey: bob.publicKey,
+        senderPublicKey: alice.publicKey,
         senderSecretKey: alice.secretKey,
       }),
     ).rejects.toBeInstanceOf(InvalidInputError)
@@ -343,12 +354,183 @@ describe('message encryption', () => {
         plaintext: 'same plaintext every time',
         clientMessageId: crypto.randomUUID(),
         recipientPublicKey: bob.publicKey,
+        senderPublicKey: alice.publicKey,
         senderSecretKey: alice.secretKey,
       })
       nonces.add(encrypted.nonce)
     }
 
     expect(nonces.size).toBe(1000)
+  })
+})
+
+describe('envelope sender and recipient binding', () => {
+  it('rejects Bob sent message reflected back as received from Alice', async () => {
+    const [alice, bob] = await identities()
+    const clientMessageId = crypto.randomUUID()
+    const encrypted = await encryptMessage({
+      plaintext: 'reflection attempt',
+      clientMessageId,
+      recipientPublicKey: alice.publicKey,
+      senderPublicKey: bob.publicKey,
+      senderSecretKey: bob.secretKey,
+    })
+
+    await expect(
+      decryptReceived({
+        ...encrypted,
+        clientMessageId,
+        senderPublicKey: alice.publicKey,
+        recipientPublicKey: bob.publicKey,
+        recipientSecretKey: bob.secretKey,
+      }),
+    ).rejects.toBeInstanceOf(EnvelopeMismatchError)
+  })
+
+  it('rejects Alice message reflected back to Alice as from Bob', async () => {
+    const [alice, bob] = await identities()
+    const clientMessageId = crypto.randomUUID()
+    const encrypted = await encryptMessage({
+      plaintext: 'reflection attempt',
+      clientMessageId,
+      recipientPublicKey: bob.publicKey,
+      senderPublicKey: alice.publicKey,
+      senderSecretKey: alice.secretKey,
+    })
+
+    await expect(
+      decryptReceived({
+        ...encrypted,
+        clientMessageId,
+        senderPublicKey: bob.publicKey,
+        recipientPublicKey: alice.publicKey,
+        recipientSecretKey: alice.secretKey,
+      }),
+    ).rejects.toBeInstanceOf(EnvelopeMismatchError)
+  })
+
+  it('throws DecryptionError when redirected to a third user', async () => {
+    const [alice, bob, carol] = await identities()
+    const clientMessageId = crypto.randomUUID()
+    const encrypted = await encryptMessage({
+      plaintext: 'for bob only',
+      clientMessageId,
+      recipientPublicKey: bob.publicKey,
+      senderPublicKey: alice.publicKey,
+      senderSecretKey: alice.secretKey,
+    })
+
+    await expect(
+      decryptReceived({
+        ...encrypted,
+        clientMessageId,
+        senderPublicKey: alice.publicKey,
+        recipientPublicKey: carol.publicKey,
+        recipientSecretKey: carol.secretKey,
+      }),
+    ).rejects.toBeInstanceOf(DecryptionError)
+  })
+
+  it('rejects a wrong envelope recipient', async () => {
+    const [alice, bob, carol] = await identities()
+    const clientMessageId = crypto.randomUUID()
+    const encrypted = await encryptMessage({
+      plaintext: 'wrong to',
+      clientMessageId,
+      recipientPublicKey: bob.publicKey,
+      senderPublicKey: alice.publicKey,
+      senderSecretKey: alice.secretKey,
+    })
+
+    await expect(
+      decryptReceived({
+        ...encrypted,
+        clientMessageId,
+        senderPublicKey: alice.publicKey,
+        recipientPublicKey: carol.publicKey,
+        recipientSecretKey: bob.secretKey,
+      }),
+    ).rejects.toBeInstanceOf(EnvelopeMismatchError)
+  })
+
+  it('rejects a wrong envelope sender', async () => {
+    const [alice, bob, carol] = await identities()
+    const clientMessageId = crypto.randomUUID()
+    const encrypted = await encryptMessage({
+      plaintext: 'wrong from',
+      clientMessageId,
+      recipientPublicKey: bob.publicKey,
+      senderPublicKey: alice.publicKey,
+      senderSecretKey: alice.secretKey,
+    })
+
+    await expect(
+      decryptSent({
+        ...encrypted,
+        clientMessageId,
+        recipientPublicKey: bob.publicKey,
+        senderPublicKey: carol.publicKey,
+        senderSecretKey: alice.secretKey,
+      }),
+    ).rejects.toBeInstanceOf(EnvelopeMismatchError)
+  })
+
+  it('rejects decryptSent on a message that was actually received', async () => {
+    const [alice, bob] = await identities()
+    const clientMessageId = crypto.randomUUID()
+    const received = await encryptMessage({
+      plaintext: 'from bob to alice',
+      clientMessageId,
+      recipientPublicKey: alice.publicKey,
+      senderPublicKey: bob.publicKey,
+      senderSecretKey: bob.secretKey,
+    })
+
+    await expect(
+      decryptSent({
+        ...received,
+        clientMessageId,
+        recipientPublicKey: bob.publicKey,
+        senderPublicKey: alice.publicKey,
+        senderSecretKey: alice.secretKey,
+      }),
+    ).rejects.toBeInstanceOf(EnvelopeMismatchError)
+  })
+
+  it('rejects a senderPublicKey that does not match the secret key', async () => {
+    const [alice, bob, carol] = await identities()
+
+    await expect(
+      encryptMessage({
+        plaintext: 'mismatched sender',
+        clientMessageId: crypto.randomUUID(),
+        recipientPublicKey: bob.publicKey,
+        senderPublicKey: carol.publicKey,
+        senderSecretKey: alice.secretKey,
+      }),
+    ).rejects.toBeInstanceOf(InvalidInputError)
+  })
+
+  it('round-trips a message from Bob to Alice as well', async () => {
+    const [alice, bob] = await identities()
+    const clientMessageId = crypto.randomUUID()
+    const encrypted = await encryptMessage({
+      plaintext: 'hello alice',
+      clientMessageId,
+      recipientPublicKey: alice.publicKey,
+      senderPublicKey: bob.publicKey,
+      senderSecretKey: bob.secretKey,
+    })
+
+    const decrypted = await decryptReceived({
+      ...encrypted,
+      clientMessageId,
+      senderPublicKey: bob.publicKey,
+      recipientPublicKey: alice.publicKey,
+      recipientSecretKey: alice.secretKey,
+    })
+
+    expect(decrypted.plaintext).toBe('hello alice')
   })
 })
 

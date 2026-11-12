@@ -2,8 +2,9 @@
  * Authenticated plaintext envelope and crypto_box message encryption.
  *
  * The server sees only nonce + ciphertext. The inner envelope carries the
- * client message id, so a server that swaps ciphertexts between message rows is
- * detected after decryption.
+ * client message id plus the sender and recipient public keys, so a server that
+ * swaps ciphertexts between message rows or reflects a message back to its
+ * sender is detected after decryption.
  */
 import {
   ENVELOPE_VERSION,
@@ -41,6 +42,7 @@ export interface EncryptMessageInput {
   plaintext: string
   clientMessageId: string
   recipientPublicKey: string
+  senderPublicKey: string
   senderSecretKey: string
 }
 
@@ -49,6 +51,7 @@ export interface DecryptReceivedInput {
   ciphertext: string
   clientMessageId: string
   senderPublicKey: string
+  recipientPublicKey: string
   recipientSecretKey: string
 }
 
@@ -57,6 +60,7 @@ export interface DecryptSentInput {
   ciphertext: string
   clientMessageId: string
   recipientPublicKey: string
+  senderPublicKey: string
   senderSecretKey: string
 }
 
@@ -64,6 +68,8 @@ interface Envelope {
   v: number
   id: string
   ts: number
+  from: string
+  to: string
   body: string
 }
 
@@ -93,12 +99,28 @@ export async function encryptMessage(
     'recipientPublicKey',
     KEY_BYTES,
   )
+  const senderPublicKey = fixedBytes(
+    input.senderPublicKey,
+    'senderPublicKey',
+    KEY_BYTES,
+  )
   const senderSecretKey = fixedBytes(
     input.senderSecretKey,
     'senderSecretKey',
     KEY_BYTES,
   )
   await ready()
+
+  const derivedPublicKey = sodium.crypto_scalarmult_base(senderSecretKey)
+  try {
+    if (!equalBytes(derivedPublicKey, senderPublicKey)) {
+      throw new InvalidInputError(
+        'senderPublicKey does not match senderSecretKey',
+      )
+    }
+  } finally {
+    zero(derivedPublicKey)
+  }
 
   const bodyBytes = utf8(plaintext)
   try {
@@ -115,6 +137,8 @@ export async function encryptMessage(
     v: ENVELOPE_VERSION,
     id: clientMessageId,
     ts: Date.now(),
+    from: toBase64(senderPublicKey),
+    to: toBase64(recipientPublicKey),
     body: plaintext,
   }
   const plaintextBytes = envelopeBytes(envelope)
@@ -136,14 +160,22 @@ export async function encryptMessage(
       ciphertext: toBase64(ciphertext),
     }
   } finally {
-    zero(plaintextBytes, senderSecretKey, recipientPublicKey, nonce)
+    zero(
+      plaintextBytes,
+      senderPublicKey,
+      recipientPublicKey,
+      senderSecretKey,
+      nonce,
+    )
   }
 }
 
 /**
  * Decrypt a message this device received.
  *
- * The sender's public key and this device's secret key are the box pair.
+ * The sender's public key and this device's secret key are the box pair. The
+ * authenticated envelope must name the same sender and this device's own public
+ * key, so a reflected or redirected ciphertext is rejected.
  */
 export async function decryptReceived(
   input: DecryptReceivedInput,
@@ -154,6 +186,8 @@ export async function decryptReceived(
     input.clientMessageId,
     input.senderPublicKey,
     input.recipientSecretKey,
+    input.senderPublicKey,
+    input.recipientPublicKey,
   )
 }
 
@@ -161,6 +195,8 @@ export async function decryptReceived(
  * Decrypt a message this device sent, for local history.
  *
  * crypto_box is symmetric, so sender secret + recipient public recovers it.
+ * The envelope must still name this device as the sender and the recorded
+ * recipient as the recipient.
  */
 export async function decryptSent(
   input: DecryptSentInput,
@@ -171,6 +207,8 @@ export async function decryptSent(
     input.clientMessageId,
     input.recipientPublicKey,
     input.senderSecretKey,
+    input.senderPublicKey,
+    input.recipientPublicKey,
   )
 }
 
@@ -180,12 +218,24 @@ async function decrypt(
   clientMessageId: string,
   publicKeyText: string,
   secretKeyText: string,
+  expectedFromText: string,
+  expectedToText: string,
 ): Promise<DecryptedMessage> {
   const clientId = requireString(clientMessageId, 'clientMessageId')
   const nonce = fixedBytes(nonceText, 'nonce', NONCE_BYTES)
   const ciphertext = fromBase64(ciphertextText, 'ciphertext')
   const publicKey = fixedBytes(publicKeyText, 'publicKey', KEY_BYTES)
   const secretKey = fixedBytes(secretKeyText, 'secretKey', KEY_BYTES)
+  const expectedFrom = fixedBytes(
+    expectedFromText,
+    'senderPublicKey',
+    KEY_BYTES,
+  )
+  const expectedTo = fixedBytes(
+    expectedToText,
+    'recipientPublicKey',
+    KEY_BYTES,
+  )
   await ready()
 
   let plaintext: Uint8Array
@@ -207,12 +257,44 @@ async function decrypt(
     if (envelope.v !== ENVELOPE_VERSION) {
       throw new EnvelopeMismatchError('Unsupported envelope version')
     }
+    const envelopeFrom = envelopeKeyBytes(envelope.from, 'from')
+    const envelopeTo = envelopeKeyBytes(envelope.to, 'to')
+    try {
+      if (
+        !equalBytes(envelopeFrom, expectedFrom) ||
+        !equalBytes(envelopeTo, expectedTo)
+      ) {
+        throw new EnvelopeMismatchError()
+      }
+    } finally {
+      zero(envelopeFrom, envelopeTo)
+    }
     if (envelope.id !== clientId) {
       throw new EnvelopeMismatchError()
     }
     return { plaintext: envelope.body, timestamp: envelope.ts }
   } finally {
-    zero(plaintext)
+    zero(plaintext, expectedFrom, expectedTo)
+  }
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false
+    }
+  }
+  return true
+}
+
+function envelopeKeyBytes(value: string, field: string): Uint8Array {
+  try {
+    return fixedBytes(value, field, KEY_BYTES)
+  } catch {
+    throw new EnvelopeMismatchError(`Envelope ${field} is invalid`)
   }
 }
 
@@ -233,6 +315,8 @@ function parseEnvelope(bytes: Uint8Array): Envelope {
     typeof candidate.id !== 'string' ||
     typeof candidate.ts !== 'number' ||
     !Number.isFinite(candidate.ts) ||
+    typeof candidate.from !== 'string' ||
+    typeof candidate.to !== 'string' ||
     typeof candidate.body !== 'string'
   ) {
     throw new EnvelopeMismatchError('Envelope fields are invalid')
@@ -242,6 +326,8 @@ function parseEnvelope(bytes: Uint8Array): Envelope {
     v: candidate.v,
     id: candidate.id,
     ts: candidate.ts,
+    from: candidate.from,
+    to: candidate.to,
     body: candidate.body,
   }
 }
