@@ -8,8 +8,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
+        target: 'http://127.0.0.1:8000',
+        // Keep the browser's Origin header intact: the backend requires an
+        // exact-match Origin for every state-changing request.
+        changeOrigin: false,
       },
     },
   },

@@ -101,8 +101,19 @@ npm run dev
 ```
 
 The dev server runs at <http://localhost:5173> and proxies `/api` to
-`http://localhost:8000`. The page is a placeholder until the protocol is
-implemented.
+`http://127.0.0.1:8000` while forwarding the browser's `Origin` header
+unchanged.
+
+For local development, the backend's `.env` must set `DEBUG=True` and include
+`http://localhost:5173` in `ALLOWED_ORIGINS`, for example:
+
+```dotenv
+DEBUG=True
+ALLOWED_ORIGINS=["http://localhost:5173"]
+```
+
+The backend rejects state-changing requests whose `Origin` is missing or not an
+exact allowlist match, so a mismatched port or host fails with `403`.
 
 ### Tests
 
