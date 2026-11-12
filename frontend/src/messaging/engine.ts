@@ -11,6 +11,8 @@ import {
   EnvelopeMismatchError,
   InvalidInputError,
   KeyChangedError,
+} from '../crypto/errors'
+import type {
   acknowledgeKeyChange,
   decryptReceived,
   decryptSent,
@@ -18,6 +20,7 @@ import {
   pinOrCheckContact,
   safetyNumber,
 } from '../crypto'
+import { loadCrypto } from '../session/cryptoLoader'
 import { useSessionStore } from '../session/store'
 import {
   VaultLockedError,
@@ -112,12 +115,16 @@ function defaultDeps(): EngineDeps {
     getSecretKey,
     isUnlocked,
     getUserKey,
-    encryptMessage,
-    decryptReceived,
-    decryptSent,
-    pinOrCheckContact,
-    acknowledgeKeyChange,
-    safetyNumber,
+    encryptMessage: async (...args) =>
+      (await loadCrypto()).encryptMessage(...args),
+    decryptReceived: async (...args) =>
+      (await loadCrypto()).decryptReceived(...args),
+    decryptSent: async (...args) => (await loadCrypto()).decryptSent(...args),
+    pinOrCheckContact: async (...args) =>
+      (await loadCrypto()).pinOrCheckContact(...args),
+    acknowledgeKeyChange: async (...args) =>
+      (await loadCrypto()).acknowledgeKeyChange(...args),
+    safetyNumber: async (...args) => (await loadCrypto()).safetyNumber(...args),
     fetchInboxPage,
     fetchSentPage,
     sendMessage,
