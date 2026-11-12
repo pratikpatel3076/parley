@@ -632,8 +632,11 @@ Returns messages addressed to the current user, ordered by ascending
 
 The page size is fixed at 100. `after` is the opaque `next_cursor` from the
 previous page; omit it for the first poll. The server returns only messages where
-the current user is the recipient. If no messages match, `next_cursor` is the
-input cursor or `null`.
+the current user is the recipient. `next_cursor` is always a usable cursor: for a
+non-empty page it is the `(created_at, id)` cursor of the last returned message,
+and for an empty page it echoes the supplied `after` value (or `null` when the
+poll started without one). A client must therefore never move its stored cursor
+backwards, and must not overwrite a stored non-null cursor with `null`.
 
 Client behavior:
 
@@ -641,11 +644,18 @@ Client behavior:
 2. If the key matches, decrypt with `crypto_box_open_easy(ciphertext, nonce,
    senderPublicKey, mySecretKey)`.
 3. Deduplicate by `(direction, client_message_id)`.
-4. Advance the in-memory cursor only after the row is displayed in the message
-   store, as either a message or a visible error. The cursor is not persisted;
-   there is no local message cache.
+4. Advance the in-memory cursor past a row only after the row is displayed in the
+   message store as a decrypted message, or after it is recognised as already
+   displayed. Rows that fail decryption, fail the envelope check, or belong to a
+   blocked peer are shown as visible errors but are not acknowledged; they remain
+   eligible for a later re-sync. The cursor is not persisted; there is no local
+   message cache.
 5. If decryption fails, show an authentication warning; do not display
    ciphertext as plaintext.
+6. Acknowledge a row only after step 2 succeeded and the plaintext was stored. An
+   error row or a blocked-peer row is never acknowledged. After the user accepts a
+   changed key, the re-sync from the start processes those rows again; a row that
+   now decrypts is displayed and acknowledged exactly once.
 
 ### 8.4 `GET /api/v1/messages/sent?after=<cursor>`
 
@@ -667,7 +677,9 @@ returns `404`. The operation is idempotent and returns the message id and
 - Each sync pass polls both `GET /messages/inbox?after=<cursor>` and
   `GET /messages/sent?after=<cursor>`, following cursors up to a hard cap. The
   inbox interval is 5 seconds while the tab is visible, with 0–1 seconds of
-  random jitter.
+  random jitter. When there is nothing new, each endpoint is requested once with
+  the stored cursor and returns an empty page, so the pass performs no decrypts
+  and no acknowledgements.
 - On errors, use exponential backoff from 5 seconds to 60 seconds. A successful
   pass resets the interval to 5 seconds.
 - Pause polling when the document is hidden; poll immediately on visibility
@@ -914,6 +926,10 @@ above. They are explicit because the code must not claim more than it does.
   payloads live only in memory. A reload or re-login re-fetches and decrypts the
   server's history. There is no IndexedDB, localStorage, sessionStorage, cookie,
   URL, or log copy of message plaintext or ciphertext.
+- **Cursor stability.** The client stores the cursor returned by the last page
+  and never replaces a non-null cursor with `null`. The backend echoes the input
+  cursor on an empty page and returns the last item's cursor on a non-empty page,
+  so reaching the end does not reset the next poll to the start of history.
 - **Sent history uses the current pin.** The client does not persist the
   recipient public key that was used for each sent message. After a key change is
   acknowledged, older sent rows encrypted to the previous key cannot be
@@ -926,7 +942,9 @@ above. They are explicit because the code must not claim more than it does.
   retryable errors; `4xx` responses are not retried.
 - **Key-change acknowledgement re-syncs history.** Accepting a new peer key
   replaces the pin, clears the block, resets both in-memory cursors, and runs a
-  sync so previously hidden rows can be decrypted with the accepted key.
+  sync so previously hidden rows can be decrypted with the accepted key. Rows
+  that were blocked had not been acknowledged, so the re-sync processes them
+  again; a row that decrypts now is shown and acknowledged once.
 
 ## 17. Client crypto implementation notes
 
@@ -976,8 +994,11 @@ The messaging engine lives in `frontend/src/messaging/` and the chat UI in
   ciphertext, `client_ts`, and `client_message_id`, and reuses that payload for
   every retry. A `4xx` response is final and drops the payload, because replaying
   it cannot succeed.
-- **Acknowledgements.** Inbox rows are acknowledged after they are displayed as
-  a message or a visible error. Already-acknowledged rows are skipped.
+- **Acknowledgements.** Inbox rows are acknowledged only after they decrypt and
+  are stored. Rows that produce an error (decryption failure, envelope mismatch,
+  invalid input) and rows from a blocked peer are never acknowledged. Already
+  acknowledged rows are skipped, so a re-sync does not send a duplicate ack.
+  Acknowledgements retry twice for retryable errors; `4xx` responses are final.
 - **Key changes.** A changed sender or recipient key blocks sending and
   automatic decryption, records both safety numbers, and requires explicit user
   acknowledgement before the pin is replaced and history is re-synced.

@@ -589,7 +589,9 @@ export class MessageEngine {
         return
       }
     }
-    this.inboxCursor = inbox.nextCursor
+    if (inbox.nextCursor !== null) {
+      this.inboxCursor = inbox.nextCursor
+    }
 
     const sent = await fetchAllPages<MessageRow>(async (after) => {
       const page = await this.deps.fetchSentPage(after)
@@ -612,7 +614,9 @@ export class MessageEngine {
         return
       }
     }
-    this.sentCursor = sent.nextCursor
+    if (sent.nextCursor !== null) {
+      this.sentCursor = sent.nextCursor
+    }
   }
 
   private async ingestInbox(

@@ -431,6 +431,63 @@ describe('sync scheduling', () => {
     expect(harness.server.inboxCalls).toHaveLength(MAX_PAGES_PER_SYNC)
     expect(harness.server.sentCalls).toHaveLength(1)
   })
+
+  it('resumes from the last cursor without decrypting or acking again', async () => {
+    const harness = await createHarness()
+    harness.server.inbox = [
+      await makeRow({
+        from: harness.bob,
+        to: harness.alice,
+        sender: harness.peer,
+        recipient: harness.owner,
+        body: 'one',
+      }),
+      await makeRow({
+        from: harness.bob,
+        to: harness.alice,
+        sender: harness.peer,
+        recipient: harness.owner,
+        body: 'two',
+      }),
+    ]
+
+    await harness.engine.start()
+    expect(harness.server.inboxCalls).toEqual([undefined, '2'])
+    expect(harness.server.ackCalls).toHaveLength(2)
+    expect(harness.decryptSpy).toHaveBeenCalledTimes(2)
+
+    await harness.engine.syncNow()
+
+    expect(harness.server.inboxCalls).toEqual([undefined, '2', '2'])
+    expect(harness.decryptSpy).toHaveBeenCalledTimes(2)
+    expect(harness.server.ackCalls).toHaveLength(2)
+  })
+
+  it('keeps a stored cursor when a poll returns an empty page with no cursor', async () => {
+    const harness = await createHarness()
+    harness.server.inbox = [
+      await makeRow({
+        from: harness.bob,
+        to: harness.alice,
+        sender: harness.peer,
+        recipient: harness.owner,
+        body: 'only',
+      }),
+    ]
+
+    await harness.engine.start()
+    expect(harness.server.inboxCalls).toEqual([undefined, '1'])
+
+    harness.server.ignoreCursor = true
+    harness.server.inbox = []
+    await harness.engine.syncNow()
+    expect(harness.server.inboxCalls).toEqual([undefined, '1', '1'])
+
+    harness.server.ignoreCursor = false
+    await harness.engine.syncNow()
+    expect(harness.server.inboxCalls).toEqual([undefined, '1', '1', '1'])
+    expect(harness.server.ackCalls).toHaveLength(1)
+  })
 })
 
 describe('inbox ingestion', () => {
