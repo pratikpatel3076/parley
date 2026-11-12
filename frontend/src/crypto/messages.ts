@@ -312,9 +312,11 @@ function parseEnvelope(bytes: Uint8Array): Envelope {
   const candidate = parsed as Partial<Envelope>
   if (
     typeof candidate.v !== 'number' ||
+    !Number.isSafeInteger(candidate.v) ||
     typeof candidate.id !== 'string' ||
     typeof candidate.ts !== 'number' ||
-    !Number.isFinite(candidate.ts) ||
+    !Number.isSafeInteger(candidate.ts) ||
+    candidate.ts < 0 ||
     typeof candidate.from !== 'string' ||
     typeof candidate.to !== 'string' ||
     typeof candidate.body !== 'string'

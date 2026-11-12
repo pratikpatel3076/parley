@@ -462,6 +462,60 @@ describe('message encryption', () => {
   })
 })
 
+describe('envelope timestamp bounds', () => {
+  async function decryptEnvelopeWithTs(
+    ts: unknown,
+  ): ReturnType<typeof decryptReceived> {
+    const [alice, bob] = await identities()
+    const clientMessageId = crypto.randomUUID()
+    const envelope = {
+      v: 1,
+      id: clientMessageId,
+      ts,
+      from: alice.publicKey,
+      to: bob.publicKey,
+      body: 'timestamp bounds',
+    }
+    const nonce = sodium.randombytes_buf(24)
+    const envelopeBase64 = Buffer.from(
+      JSON.stringify(envelope),
+      'utf8',
+    ).toString('base64')
+    const ciphertext = sodium.crypto_box_easy(
+      fromB64(envelopeBase64),
+      nonce,
+      fromB64(bob.publicKey),
+      fromB64(alice.secretKey),
+    )
+
+    return decryptReceived({
+      nonce: b64(nonce),
+      ciphertext: b64(ciphertext),
+      clientMessageId,
+      senderPublicKey: alice.publicKey,
+      recipientPublicKey: bob.publicKey,
+      recipientSecretKey: bob.secretKey,
+    })
+  }
+
+  it.each([
+    ['fractional', 1.5],
+    ['NaN', Number.NaN],
+    ['negative', -1],
+    ['a string', '1767225600000'],
+  ])('rejects a %s timestamp', async (_label, ts) => {
+    await expect(decryptEnvelopeWithTs(ts)).rejects.toBeInstanceOf(
+      EnvelopeMismatchError,
+    )
+  })
+
+  it('accepts a safe non-negative integer timestamp', async () => {
+    const decrypted = await decryptEnvelopeWithTs(1767225600000)
+
+    expect(decrypted.timestamp).toBe(1767225600000)
+  })
+})
+
 describe('envelope sender and recipient binding', () => {
   it('rejects Bob sent message reflected back as received from Alice', async () => {
     const [alice, bob] = await identities()
