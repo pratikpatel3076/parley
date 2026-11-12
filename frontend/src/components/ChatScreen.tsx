@@ -4,7 +4,7 @@ import { logout } from '../api/client'
 import { USERNAME_PATTERN } from '../crypto/constants'
 import { getMessageEngine } from '../messaging/engine'
 import { useMessagingStore } from '../messaging/store'
-import { lockSession } from '../session/store'
+import { lockSession, useSessionStore } from '../session/store'
 import { ConversationList } from './chat/ConversationList'
 import { ConversationView } from './chat/ConversationView'
 
@@ -14,6 +14,7 @@ interface ChatScreenProps {
 
 export function ChatScreen({ username }: ChatScreenProps) {
   const engine = getMessageEngine()
+  const publicKey = useSessionStore((state) => state.publicKey)
   const conversations = useMessagingStore((state) => state.conversations)
   const syncing = useMessagingStore((state) => state.syncing)
   const lastSyncError = useMessagingStore((state) => state.lastSyncError)
@@ -173,6 +174,7 @@ export function ChatScreen({ username }: ChatScreenProps) {
           <ConversationView
             conversation={conversation}
             username={username}
+            myPublicKey={publicKey ?? ''}
             onSend={async (body) => {
               await engine.send(conversation.peer, body)
             }}

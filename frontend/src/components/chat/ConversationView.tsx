@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import type {
   ChatError,
@@ -6,12 +6,18 @@ import type {
   ChatMessage,
   Conversation,
 } from '../../messaging/store'
+import {
+  readVerification,
+  type VerificationSnapshot,
+} from '../../session/verification'
 import { Composer } from './Composer'
 import { KeyChangeBanner } from './KeyChangeBanner'
+import { VerificationPanel } from './VerificationPanel'
 
 interface ConversationViewProps {
   conversation: Conversation
   username: string
+  myPublicKey: string
   onSend: (body: string) => Promise<void>
   onRetry: (clientMessageId: string) => Promise<void>
   onAcknowledgeKeyChange: () => Promise<void>
@@ -121,12 +127,37 @@ function ErrorRow({ error }: { error: ChatError }) {
 export function ConversationView({
   conversation,
   username,
+  myPublicKey,
   onSend,
   onRetry,
   onAcknowledgeKeyChange,
 }: ConversationViewProps) {
   const [retrying, setRetrying] = useState<string | null>(null)
   const [retryError, setRetryError] = useState<string | null>(null)
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [verification, setVerification] = useState<
+    VerificationSnapshot | null | undefined
+  >(undefined)
+
+  const refreshVerification = useCallback(async (): Promise<void> => {
+    try {
+      const next = await readVerification(
+        username,
+        conversation.peer,
+        myPublicKey,
+      )
+      setVerification(next)
+    } catch {
+      setVerification(null)
+    }
+  }, [username, conversation.peer, myPublicKey])
+
+  // Re-read the pinned contact whenever the conversation or its pinned key
+  // changes, so a key-change acceptance can never leave a stale "Verified"
+  // badge on screen.
+  useEffect(() => {
+    void refreshVerification()
+  }, [refreshVerification, conversation.blocked, conversation.peerKey])
 
   async function retry(clientMessageId: string): Promise<void> {
     setRetrying(clientMessageId)
@@ -141,6 +172,7 @@ export function ConversationView({
   }
 
   const blocked = conversation.blocked !== null
+  const verified = !blocked && verification?.verified === true
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -151,20 +183,39 @@ export function ConversationView({
           </h2>
           <p className="text-xs text-slate-500">Signed in as {username}</p>
         </div>
-        {conversation.safetyNumber !== null ? (
-          <div className="mt-2">
-            <p className="text-xs uppercase tracking-wide text-slate-500">
-              Safety number
-            </p>
-            <code
-              aria-label={`Safety number with ${conversation.peer}`}
-              className="mt-1 block break-words font-mono text-xs text-slate-400"
-            >
-              {conversation.safetyNumber}
-            </code>
-          </div>
-        ) : null}
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <span
+            role="status"
+            className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+              verified
+                ? 'bg-emerald-500/15 text-emerald-300'
+                : 'bg-amber-500/15 text-amber-300'
+            }`}
+          >
+            {verified ? 'Verified' : 'Unverified'}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setPanelOpen(true)
+              void refreshVerification()
+            }}
+            disabled={myPublicKey.length === 0}
+            className="rounded-lg border border-slate-700 px-3 py-1 text-xs font-medium text-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Verify
+          </button>
+        </div>
       </header>
+
+      <VerificationPanel
+        open={panelOpen}
+        owner={username}
+        peer={conversation.peer}
+        myPublicKey={myPublicKey}
+        onClose={() => setPanelOpen(false)}
+        onChanged={() => void refreshVerification()}
+      />
 
       {conversation.blocked !== null ? (
         <KeyChangeBanner
