@@ -1,11 +1,11 @@
 # Parley Threat Model
 
 Status: design document for the protocol in [PROTOCOL.md](PROTOCOL.md). The
-backend MVP implements the server side, and the frontend implements the client
-crypto layer (`frontend/src/crypto/`), but there is no UI and the end-to-end
-flows are not wired up, so the repository is not a working messenger. This model
-describes the intended design and its limits; it is not a claim that the code
-has been audited.
+backend MVP implements the server side. The frontend implements the client
+crypto layer (`frontend/src/crypto/`) and the register, login, and logout
+screens, so account creation and sign-in work end to end; messaging is not
+implemented. This model describes the design and its limits; it is not a claim
+that the code has been audited.
 
 ## 1. Scope
 
@@ -159,9 +159,32 @@ Everything else is explicitly out of scope or a known limitation.
 - **XSS, malicious browser extension, compromised dependency, or a hostile
   page in the same origin** can read the unwrapped key while the vault is open
   and can call the client's crypto functions.
-- **Mitigations:** a strict CSP, no third-party scripts, dependency pinning and
-  review, and treating the client bundle as part of the trusted computing base.
+- **Roadmap mitigations:** a strict Content-Security-Policy, no third-party
+  scripts, dependency pinning and review, and treating the client bundle as part
+  of the trusted computing base. The CSP is not implemented yet.
 - **Not provided:** protection from a compromised browser, OS, or extension.
+
+### 3.7 Web delivery of the client
+
+- **Capability:** the host serves the JavaScript that becomes the trusted
+  client. A malicious or compromised host, CDN, deployment pipeline, or
+  dependency can serve modified code.
+- **Can:** read the unlocked key and plaintext from the running page, capture
+  the password as it is typed, forge or suppress safety-number warnings, and
+  alter the UI to hide a key change.
+- **Protocol cryptography cannot stop this.** End-to-end encryption protects
+  stored data from the server; it does not protect a user from a client that has
+  been rewritten. Parley's guarantees hold against passive observers, an
+  honest-but-curious server, and storage breaches. They do **not** hold against
+  an actively malicious app host.
+- **XSS is the same boundary.** Script injected into the app can read the
+  unlocked key and every password field. The key-protection model does not
+  survive script injection. A strict Content-Security-Policy is a roadmap item,
+  not a current mitigation.
+- **Roadmap mitigations:** native clients with signed binaries; Subresource
+  Integrity plus pinned builds; reproducible builds so a user can verify that a
+  deployed bundle matches reviewed source. None of these is implemented. Until
+  then, a user who does not trust the host cannot safely use the hosted web app.
 
 ## 4. What the server can and cannot see
 

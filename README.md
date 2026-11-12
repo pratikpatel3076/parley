@@ -9,11 +9,12 @@ matches the claims.
 what was reused, what was changed, and the raw-password weakness Parley must not
 inherit.
 
-> Status: **backend MVP; no frontend yet.** The backend implements
+> Status: **auth screens implemented; chat not yet.** The backend implements
 > registration/login, refresh rotation, the public-key directory, and opaque
-> message storage per `docs/PROTOCOL.md`. The frontend is still a blank page and
-> the client-side encryption protocol is not implemented. Nothing here is
-> audited or production-ready.
+> message storage per `docs/PROTOCOL.md`. The frontend implements the client
+> crypto layer and the register, login, and logout screens. Sending and
+> receiving messages is not implemented. Nothing here is audited or
+> production-ready.
 
 ## What it is
 
@@ -64,11 +65,11 @@ list and [docs/PROTOCOL.md](docs/PROTOCOL.md) section 14 for deferred work.
 | Backend | FastAPI, Python 3.11+, SQLAlchemy async |
 | Dev database | SQLite (`sqlite+aiosqlite`) |
 | Backend tests | pytest, httpx TestClient |
-| Crypto (planned) | libsodium-wrappers for messaging; Web Crypto PBKDF2 + AES-256-GCM for private-key wrapping |
+| Crypto | libsodium-wrappers for messaging; Web Crypto PBKDF2 + AES-256-GCM for private-key wrapping |
 | Transport (planned) | REST + polling |
 
-The scaffold does not install crypto libraries it does not use yet. They are
-added with the protocol implementation.
+The frontend lazy-loads libsodium on first use, so the sign-in screen paints
+before the crypto engine is downloaded and initialised.
 
 ## Quickstart
 
@@ -92,11 +93,17 @@ is missing, blank, or a known placeholder. Only `.env.example` is committed;
 
 Health check: <http://localhost:8000/health>
 
+The dev database is a SQLite file at `backend/parley.db` (relative to the
+directory where `uvicorn` runs). The MVP creates tables with `create_all` and
+has no migrations. If you change the schema or want a clean slate, stop the
+server, delete that file, and restart; otherwise registration against the old
+schema can fail.
+
 ### Frontend
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -137,8 +144,8 @@ parley/
 │   └── tests/            pytest placeholder and config tests
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx       placeholder page
-│   │   ├── stores/       Zustand store
+│   │   ├── App.tsx       auth screen switching
+│   │   ├── stores/       legacy Zustand scaffold store
 │   │   └── test/         vitest setup
 │   └── vite.config.ts    Vite, Tailwind, and vitest config
 ├── docs/
@@ -169,7 +176,8 @@ parley/
 | Jotter recon and reuse record | Done |
 | Threat model and protocol spec | Done |
 | Monorepo scaffold with health endpoint and placeholder tests | Done |
-| Registration, login, and local key wrapping | Planned |
+| Client crypto layer (wrapping, envelopes, storage) | Done |
+| Registration, login, and logout screens | Done |
 | 1:1 message send/receive with libsodium | Planned |
 | Contact pinning and safety numbers | Planned |
 | End-to-end protocol tests | Planned |

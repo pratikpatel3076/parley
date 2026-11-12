@@ -4,10 +4,11 @@ Status: the backend MVP implements the server side of sections 3.2, 5, 6.1,
 8.2-8.5, and 9, with the backend deviations listed in section 16. The frontend
 implements the client crypto layer in `frontend/src/crypto/` (keypair, wrapping,
 auth-secret derivation, envelopes, safety numbers, password policy, IndexedDB
-storage), covered by vitest. The UI and the request/response flows that wire that
-layer to the server (sections 3.1, 4, 6, 7, and 8.1 in the running app) are still
-not implemented. This document is the contract the implementation must satisfy.
-Security claims and limits are in [THREAT_MODEL.md](THREAT_MODEL.md).
+storage) and the register, login, and logout flows in the running app (sections
+3.1, 4, 6, 7, and 8.1 for authentication). Message send/receive (section 8.1
+beyond auth) is not implemented yet. This document is the contract the
+implementation must satisfy. Security claims and limits are in
+[THREAT_MODEL.md](THREAT_MODEL.md).
 
 Protocol version: `1`.
 

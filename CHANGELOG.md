@@ -19,10 +19,24 @@ All notable changes to Parley are documented here. Format follows
 - Monorepo scaffold: FastAPI backend with a health endpoint and fail-fast
   settings, Vite/React/TypeScript/Tailwind/Zustand frontend with a placeholder
   page, and pytest/vitest placeholder tests.
+- Typed API client with cookie credentials, single-flight refresh across tabs,
+  bounded retry, and safe errors in `frontend/src/api/client.ts`.
+- In-memory session vault, Zustand session store, test-only KDF work-factor
+  override, and lazy libsodium loading in `frontend/src/session/`.
+- Register, login, and logout screens with inline username validation, a live
+  strength meter, the no-recovery acknowledgement, local key unwrapping before
+  login, and safe errors.
 - Root `.env.example`, `.gitignore`, `README.md`, and this changelog.
 
 ### Security
 
+- Documented the web-delivery trust limit in `docs/THREAT_MODEL.md`: a malicious
+  or compromised app host can serve code that reads the unlocked key, XSS
+  defeats the key-protection model, and native clients, SRI with pinned builds,
+  reproducible builds, and a CSP remain roadmap items.
+- The unlocked secret key lives only in a module-level variable in
+  `frontend/src/session/vault.ts`; passwords and key material are never kept in
+  Zustand, browser storage, cookies, the URL, or logs.
 - Parley's design does not send the raw password or a server-stored wrapped
   private key, which removes the critical weakness identified in Jotter.
 - Empty, short, or placeholder `SECRET_KEY` values are rejected at startup.
