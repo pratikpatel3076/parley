@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 
 import { ApiError } from '../api/client'
 import { register } from '../api/client'
@@ -8,7 +8,10 @@ import {
   StorageError,
   WeakPasswordError,
 } from '../crypto/errors'
-import { checkPassword } from '../crypto/password'
+import {
+  checkPassword,
+  type PasswordCheckResult,
+} from '../crypto/password'
 import { saveLastUsername } from '../lastUsername'
 import { loadCrypto } from '../session/cryptoLoader'
 import { getKdfIterations } from '../session/kdfConfig'
@@ -79,21 +82,51 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
   const [busy, setBusy] = useState(false)
   const [phase, setPhase] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [strength, setStrength] = useState<PasswordCheckResult | null>(null)
+  const [checking, setChecking] = useState(false)
 
   const usernameValid = USERNAME_PATTERN.test(username)
   const usernameInvalid = username.length > 0 && !usernameValid
-  const strength =
-    password.length > 0
-      ? checkPassword(password, usernameValid ? username : 'parley')
-      : null
   const passwordsMatch = password === confirmPassword
   const canSubmit =
     usernameValid &&
     password.length > 0 &&
     passwordsMatch &&
     strength?.ok === true &&
+    !checking &&
     acknowledged &&
     !busy
+
+  useEffect(() => {
+    if (password.length === 0) {
+      setStrength(null)
+      setChecking(false)
+      return
+    }
+
+    let cancelled = false
+    setChecking(true)
+    checkPassword(password, usernameValid ? username : 'parley')
+      .then((result) => {
+        if (!cancelled) {
+          setStrength(result)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStrength(null)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setChecking(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [password, username, usernameValid])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -308,7 +341,10 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
             max={4}
             value={strength?.score ?? 0}
           />
-          {strength !== null ? (
+          {checking ? (
+            <p className="text-xs text-slate-400">checking…</p>
+          ) : null}
+          {!checking && strength !== null ? (
             <>
               {strength.feedback.warning !== null ? (
                 <p className="text-xs text-amber-300">

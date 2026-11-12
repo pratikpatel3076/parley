@@ -1,19 +1,15 @@
 /**
  * Password strength policy.
  *
- * `checkPassword` is a pure check that reports its result. `assertStrongPassword`
- * is the throwing wrapper for call sites that must not continue on a weak
- * password.
+ * The zxcvbn dictionaries are large, so they are loaded with dynamic imports the
+ * first time a check is needed. The login screen paints without downloading
+ * them; the registration form shows a "checking…" state until the check
+ * resolves.
+ *
+ * `checkPassword` reports its result. `assertStrongPassword` is the throwing
+ * wrapper for call sites that must not continue on a weak password.
  */
-import { ZxcvbnFactory, type ZxcvbnResult } from '@zxcvbn-ts/core'
-import {
-  adjacencyGraphs,
-  dictionary as commonDictionary,
-} from '@zxcvbn-ts/language-common'
-import {
-  dictionary as englishDictionary,
-  translations,
-} from '@zxcvbn-ts/language-en'
+import type { ZxcvbnFactory, ZxcvbnResult } from '@zxcvbn-ts/core'
 
 import { MIN_PASSWORD_LENGTH, MIN_PASSWORD_SCORE } from './constants'
 import { InvalidInputError, WeakPasswordError } from './errors'
@@ -29,13 +25,39 @@ export interface PasswordCheckResult {
   feedback: PasswordFeedback
 }
 
-const zxcvbn = new ZxcvbnFactory({
-  dictionary: { ...commonDictionary, ...englishDictionary },
-  graphs: adjacencyGraphs,
-  translations,
-})
+let zxcvbnPromise: Promise<ZxcvbnFactory> | null = null
 
-function evaluate(password: string, username: string): ZxcvbnResult {
+function loadZxcvbn(): Promise<ZxcvbnFactory> {
+  if (zxcvbnPromise === null) {
+    zxcvbnPromise = Promise.all([
+      import('@zxcvbn-ts/core'),
+      import('@zxcvbn-ts/language-common'),
+      import('@zxcvbn-ts/language-en'),
+    ])
+      .then(([core, common, english]) => {
+        return new core.ZxcvbnFactory({
+          dictionary: {
+            ...common.dictionary,
+            ...english.dictionary,
+          },
+          graphs: common.adjacencyGraphs,
+          translations: english.translations,
+        })
+      })
+      .catch((error: unknown) => {
+        // Allow a later attempt after a transient chunk-load failure.
+        zxcvbnPromise = null
+        throw error
+      })
+  }
+  return zxcvbnPromise
+}
+
+function evaluate(
+  zxcvbn: ZxcvbnFactory,
+  password: string,
+  username: string,
+): ZxcvbnResult {
   return zxcvbn.check(password, [username])
 }
 
@@ -45,10 +67,10 @@ function evaluate(password: string, username: string): ZxcvbnResult {
  * A short or weak password returns `ok: false`; malformed arguments throw
  * {@link InvalidInputError}.
  */
-export function checkPassword(
+export async function checkPassword(
   password: string,
   username: string,
-): PasswordCheckResult {
+): Promise<PasswordCheckResult> {
   if (typeof password !== 'string') {
     throw new InvalidInputError('password must be a string')
   }
@@ -56,7 +78,8 @@ export function checkPassword(
     throw new InvalidInputError('username must be a non-empty string')
   }
 
-  const result = evaluate(password, username)
+  const zxcvbn = await loadZxcvbn()
+  const result = evaluate(zxcvbn, password, username)
   const longEnough = password.length >= MIN_PASSWORD_LENGTH
   const strongEnough = result.score >= MIN_PASSWORD_SCORE
   return {
@@ -70,11 +93,11 @@ export function checkPassword(
 }
 
 /** Throw {@link WeakPasswordError} unless {@link checkPassword} accepts. */
-export function assertStrongPassword(
+export async function assertStrongPassword(
   password: string,
   username: string,
-): PasswordCheckResult {
-  const result = checkPassword(password, username)
+): Promise<PasswordCheckResult> {
+  const result = await checkPassword(password, username)
   if (!result.ok) {
     throw new WeakPasswordError(
       result.feedback.warning ??

@@ -744,28 +744,28 @@ describe('storage and pinning', () => {
 })
 
 describe('password policy', () => {
-  it('rejects a short password', () => {
-    const result = checkPassword('Sh0rt!', 'alice')
+  it('rejects a short password', async () => {
+    const result = await checkPassword('Sh0rt!', 'alice')
 
     expect(result.ok).toBe(false)
   })
 
-  it('rejects a long but weak password', () => {
-    const result = checkPassword('aaaaaaaaaaaa', 'alice')
+  it('rejects a long but weak password', async () => {
+    const result = await checkPassword('aaaaaaaaaaaa', 'alice')
 
     expect(result.ok).toBe(false)
     expect(result.score).toBeLessThan(3)
   })
 
-  it('accepts a strong password', () => {
-    const result = checkPassword('vN7#qL2$wR9!tY4@', 'alice')
+  it('accepts a strong password', async () => {
+    const result = await checkPassword('vN7#qL2$wR9!tY4@', 'alice')
 
     expect(result.ok).toBe(true)
     expect(result.score).toBeGreaterThanOrEqual(3)
   })
 
-  it('assertStrongPassword throws WeakPasswordError', () => {
-    expect(() => assertStrongPassword('Sh0rt!', 'alice')).toThrow(
+  it('assertStrongPassword throws WeakPasswordError', async () => {
+    await expect(assertStrongPassword('Sh0rt!', 'alice')).rejects.toBeInstanceOf(
       WeakPasswordError,
     )
   })

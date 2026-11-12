@@ -74,6 +74,21 @@ function registerButton(): HTMLElement {
   return screen.getByRole('button', { name: 'Create account' })
 }
 
+async function waitForStrength(): Promise<void> {
+  await waitFor(() => {
+    expect(screen.queryByText('checking…')).not.toBeInTheDocument()
+  })
+}
+
+async function submitRegistration(): Promise<void> {
+  fireEvent.click(screen.getByRole('checkbox'))
+  await waitForStrength()
+  await waitFor(() => {
+    expect(registerButton()).toBeEnabled()
+  })
+  fireEvent.click(registerButton())
+}
+
 function fillLogin(password: string): void {
   fireEvent.change(screen.getByLabelText('Username'), {
     target: { value: USERNAME },
@@ -100,15 +115,17 @@ afterEach(async () => {
 })
 
 describe('register', () => {
-  it('refuses a weak password and an unchecked acknowledgement', () => {
+  it('refuses a weak password and an unchecked acknowledgement', async () => {
     openRegisterScreen()
 
     fillRegister('password')
     fireEvent.click(screen.getByRole('checkbox'))
+    await waitForStrength()
     expect(registerButton()).toBeDisabled()
 
     fillRegister(STRONG_PASSWORD)
     fireEvent.click(screen.getByRole('checkbox'))
+    await waitForStrength()
     expect(registerButton()).toBeDisabled()
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -118,8 +135,7 @@ describe('register', () => {
 
     openRegisterScreen()
     fillRegister(STRONG_PASSWORD)
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(registerButton())
+    await submitRegistration()
 
     expect(
       await screen.findByText(/already has a key for that username/i),
@@ -137,8 +153,7 @@ describe('register', () => {
 
     openRegisterScreen()
     fillRegister(STRONG_PASSWORD)
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(registerButton())
+    await submitRegistration()
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'That username is taken',
@@ -154,8 +169,7 @@ describe('register', () => {
 
     openRegisterScreen()
     fillRegister(STRONG_PASSWORD)
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(registerButton())
+    await submitRegistration()
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'The server rejected the username or key',
@@ -170,8 +184,7 @@ describe('register', () => {
 
     openRegisterScreen()
     fillRegister(STRONG_PASSWORD)
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(registerButton())
+    await submitRegistration()
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       /Registration may have succeeded/,
@@ -194,8 +207,7 @@ describe('register', () => {
 
     openRegisterScreen()
     fillRegister(STRONG_PASSWORD)
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(registerButton())
+    await submitRegistration()
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       /different key for this account/,
@@ -225,8 +237,7 @@ describe('register', () => {
 
     openRegisterScreen()
     fillRegister(STRONG_PASSWORD)
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(registerButton())
+    await submitRegistration()
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       /different username/,
@@ -242,8 +253,7 @@ describe('register', () => {
 
     openRegisterScreen()
     fillRegister(STRONG_PASSWORD)
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.click(registerButton())
+    await submitRegistration()
 
     await screen.findByRole('alert')
 
