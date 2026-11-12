@@ -49,6 +49,14 @@ class Session(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # revoked_reason is one of: rotated, logout, reuse_detected, expired,
+    # user_deleted. It stays NULL while the session is active.
+    revoked_reason: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    rotated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
 
 
 class Message(Base):

@@ -10,7 +10,18 @@ from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings
 
 # Never echo SQL: bound parameters can contain auth material and ciphertext.
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
+# SQLite needs a wait budget so a concurrent single-use rotation loses cleanly
+# on the conditional UPDATE instead of failing with "database is locked".
+_connect_args = (
+    {"timeout": 5}
+    if settings.DATABASE_URL.startswith("sqlite")
+    else {}
+)
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=False,
+    connect_args=_connect_args,
+)
 SessionLocal = async_sessionmaker(
     engine,
     class_=AsyncSession,

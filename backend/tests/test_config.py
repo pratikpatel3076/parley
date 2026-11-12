@@ -154,3 +154,28 @@ def test_settings_refresh_lifetime_is_configurable(monkeypatch) -> None:
     settings = Settings(_env_file=None)
 
     assert settings.REFRESH_TOKEN_EXPIRE_DAYS == 7
+
+
+@pytest.mark.parametrize("value", ["-1", "61", "120"])
+def test_settings_reject_reuse_grace_out_of_range(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-" + "x" * 48)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+    monkeypatch.setenv("REFRESH_REUSE_GRACE_SECONDS", value)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "REFRESH_REUSE_GRACE_SECONDS" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(("value", "expected"), [("0", 0), ("10", 10), ("60", 60)])
+def test_settings_accept_reuse_grace_in_range(
+    monkeypatch, value: str, expected: int
+) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-" + "x" * 48)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+    monkeypatch.setenv("REFRESH_REUSE_GRACE_SECONDS", value)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.REFRESH_REUSE_GRACE_SECONDS == expected

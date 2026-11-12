@@ -219,7 +219,7 @@ def test_authorization_header_is_not_accepted(client) -> None:
     assert response.status_code == 401
 
 
-def test_refresh_rotates_and_old_token_reuse_revokes_sessions(client) -> None:
+def test_refresh_rotates_and_immediate_reuse_is_rejected(client) -> None:
     register(client)
     access_1, refresh_1 = auth_cookies(client)
     assert access_1 and refresh_1
@@ -231,17 +231,18 @@ def test_refresh_rotates_and_old_token_reuse_revokes_sessions(client) -> None:
     assert access_2 and access_2 != access_1
     assert client.get("/api/v1/messages/inbox").status_code == 200
 
-    # Replay the rotated token. This is treated as theft: every session for the
-    # user is revoked, including the replacement created above.
+    # An immediate replay is inside the reuse grace window: reject it, but do
+    # not treat a concurrent tab as theft and do not revoke the replacement.
     use_auth(client, access_2, refresh_1)
     replay = client.post("/api/v1/auth/refresh", headers=auth_headers())
     assert replay.status_code == 401
+    assert not replay.headers.get_list("set-cookie")
 
     use_auth(client, access_2, refresh_2)
-    assert client.get("/api/v1/messages/inbox").status_code == 401
+    assert client.get("/api/v1/messages/inbox").status_code == 200
     assert (
         client.post("/api/v1/auth/refresh", headers=auth_headers()).status_code
-        == 401
+        == 200
     )
 
 

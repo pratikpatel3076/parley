@@ -289,14 +289,38 @@ After a successful login the client:
   state-changing endpoint, including logout. Non-browser clients must therefore
   send an explicit `Origin` header. This, plus `SameSite=Lax`, is the CSRF
   defense. A dedicated origin (not a shared subdomain) is required.
-- `POST /api/v1/auth/refresh` rotates the refresh token. If the presented token
-  matches a revoked/rotated session, revoke all sessions for that user; treat it
-  as a theft signal.
+- `POST /api/v1/auth/refresh` rotates the refresh token. Rotation is atomic and
+  single-use: the server flips the presented session with a conditional update
+  (`... WHERE id = :id AND revoked = 0`) and creates the replacement in the same
+  transaction. If exactly one row changed, the caller gets new cookies.
+- **Session states.** `revoked` remains the boolean every authentication check
+  reads. `revoked_reason` records why it became true: `rotated`, `logout`,
+  `reuse_detected`, `expired`, or `user_deleted`; it is NULL while the session is
+  active. `rotated_at` records when the session was rotated (UTC), NULL
+  otherwise.
+- **Refresh reuse rules.** If the conditional update changes no row, the server
+  re-reads the session and applies these rules:
+  - `revoked_reason = 'rotated'` and the replay is more than
+    `REFRESH_REUSE_GRACE_SECONDS` (integer, default 10, allowed 0-60) after
+    `rotated_at`: theft signal. Revoke every non-revoked session for that user
+    with `revoked_reason = 'reuse_detected'`, return `401`, and clear both
+    cookies.
+  - `revoked_reason = 'rotated'` within the grace window: assume a concurrent
+    refresh from another tab. Return `401`, revoke nothing, and do **not** clear
+    cookies, because the browser may already hold the replacement pair.
+  - Any other revoked reason, an expired session, or an unknown token: return
+    `401`, do not revoke other sessions, and clear both cookies.
+- **Clients should refresh single-flight.** Serialize refreshes per browser
+  profile (a tab mutex or one owning tab). The grace window only prevents
+  concurrent tabs from logging each other out; it does not make parallel
+  refreshes correct, and a replay outside the window is still treated as theft.
 - `POST /api/v1/auth/logout` is idempotent and always returns `200`. It revokes
   the session named by a valid access cookie and the session named by a valid
   refresh cookie independently, so a valid refresh cookie is revoked even when
-  the access cookie is missing or expired. It always deletes both cookies and
-  never returns `401` for missing cookies.
+  the access cookie is missing or expired. A session that is still active gets
+  `revoked_reason = 'logout'`; a session that is already revoked keeps its
+  existing reason. Logout never revokes other sessions. It always deletes both
+  cookies and never returns `401` for missing cookies.
 - Registration and login are rate-limited in process. The limiter is per worker,
   not shared across processes or hosts; a multi-worker deployment needs a shared
   limiter.
@@ -621,6 +645,8 @@ sessions
   created_at          timestamptz
   expires_at          timestamptz
   revoked             boolean
+  revoked_reason      text null (rotated | logout | reuse_detected | expired | user_deleted)
+  rotated_at          timestamptz null
 
 messages
   id                  uuid primary key
@@ -646,7 +672,10 @@ must not log it.
 
 The MVP creates the schema with `Base.metadata.create_all` at startup. Migrations
 are deferred until the first schema change; this is not a production migration
-strategy.
+strategy. Because `create_all` only creates missing tables and never alters an
+existing one, a development SQLite database created before the session-state
+change must be deleted and recreated. It will not gain the `revoked_reason` or
+`rotated_at` columns automatically.
 
 Operational requirements:
 

@@ -1,7 +1,8 @@
 import base64
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -108,6 +109,55 @@ def _new_session(user_id: str) -> tuple[Session, str]:
     return session, raw_refresh
 
 
+def _reject_refresh(*, clear_cookies: bool) -> Response:
+    """Return a uniform 401, clearing cookies unless a peer may hold new ones."""
+    rejected = JSONResponse(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        content={"detail": "Invalid refresh token"},
+    )
+    if clear_cookies:
+        _clear_auth_cookies(rejected)
+    return rejected
+
+
+def _within_reuse_grace(session: Session, *, now: datetime) -> bool:
+    if session.revoked_reason != "rotated" or session.rotated_at is None:
+        return False
+    return now - session.rotated_at <= timedelta(
+        seconds=settings.REFRESH_REUSE_GRACE_SECONDS
+    )
+
+
+async def _reject_revoked_session(
+    db: AsyncSession,
+    session: Session,
+    *,
+    now: datetime,
+) -> Response:
+    """Apply the revoked-session rules for a presented refresh token.
+
+    A rotated token replayed inside the grace window is assumed to be a
+    concurrent request from another tab: reject it, revoke nothing, and leave
+    cookies alone because the browser may already hold the replacement pair.
+    Outside the window it is a theft signal, so every live session is revoked.
+    """
+    if _within_reuse_grace(session, now=now):
+        return _reject_refresh(clear_cookies=False)
+
+    if session.revoked_reason == "rotated" and session.rotated_at is not None:
+        await db.execute(
+            update(Session)
+            .where(
+                Session.user_id == session.user_id,
+                Session.revoked.is_(False),
+            )
+            .values(revoked=True, revoked_reason="reuse_detected")
+        )
+        await db.commit()
+
+    return _reject_refresh(clear_cookies=True)
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
     payload: RegisterRequest,
@@ -176,60 +226,60 @@ async def login(
     return {"user": _user_payload(user)}
 
 
-@router.post("/refresh")
+@router.post("/refresh", response_model=None)
 async def refresh(
     response: Response,
     parley_refresh: str | None = Cookie(default=None),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
+) -> Response | dict[str, str]:
     if not parley_refresh:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
-        )
+        return _reject_refresh(clear_cookies=True)
 
     token_hash = hash_refresh_token(parley_refresh)
     session = await db.scalar(
         select(Session).where(Session.refresh_token_hash == token_hash)
     )
     if session is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
-        )
+        return _reject_refresh(clear_cookies=True)
 
+    session_id = session.id
+    session_user_id = session.user_id
+
+    now = utcnow()
     if session.revoked:
-        # A rotated token came back. Treat it as a theft signal and revoke every
-        # session for this user, including the current replacement.
-        await db.execute(
-            update(Session)
-            .where(Session.user_id == session.user_id)
-            .values(revoked=True)
-        )
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
-        )
+        return await _reject_revoked_session(db, session, now=now)
 
-    if session.expires_at <= utcnow():
+    if session.expires_at <= now:
         session.revoked = True
+        session.revoked_reason = "expired"
         await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
-        )
+        return _reject_refresh(clear_cookies=True)
 
-    user = await db.get(User, session.user_id)
+    user = await db.get(User, session_user_id)
     if user is None:
         session.revoked = True
+        session.revoked_reason = "user_deleted"
         await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
-        )
+        return _reject_refresh(clear_cookies=True)
 
-    session.revoked = True
+    # Single-use rotation. Only one concurrent request can flip revoked 0 -> 1;
+    # every other request re-reads the row and follows the reuse rules above.
+    rotated = await db.execute(
+        update(Session)
+        .where(Session.id == session_id, Session.revoked.is_(False))
+        .values(
+            revoked=True,
+            revoked_reason="rotated",
+            rotated_at=now,
+        )
+    )
+    if rotated.rowcount != 1:
+        await db.rollback()
+        current = await db.get(Session, session_id)
+        if current is None:
+            return _reject_refresh(clear_cookies=True)
+        return await _reject_revoked_session(db, current, now=now)
+
     new_session, raw_refresh = _new_session(user.id)
     db.add(new_session)
     await db.flush()
@@ -262,6 +312,7 @@ async def logout(
             session = await db.get(Session, payload["sid"])
             if session is not None and not session.revoked:
                 session.revoked = True
+                session.revoked_reason = "logout"
                 revoked = True
 
     if parley_refresh:
@@ -272,6 +323,7 @@ async def logout(
         )
         if stored is not None and not stored.revoked:
             stored.revoked = True
+            stored.revoked_reason = "logout"
             revoked = True
 
     if revoked:

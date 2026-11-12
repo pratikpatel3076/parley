@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    # A replay of a rotated refresh token is treated as theft only after this
+    # window. Inside it, the request is assumed to be a concurrent refresh from
+    # another tab and is rejected without revoking anything.
+    REFRESH_REUSE_GRACE_SECONDS: int = 10
 
     FRONTEND_URL: str = "http://localhost:5173"
     ALLOWED_ORIGINS: list[str] = Field(
@@ -86,6 +90,15 @@ class Settings(BaseSettings):
     def validate_refresh_token_lifetime(cls, value: int) -> int:
         if value < 1:
             raise ValueError("REFRESH_TOKEN_EXPIRE_DAYS must be at least 1.")
+        return value
+
+    @field_validator("REFRESH_REUSE_GRACE_SECONDS")
+    @classmethod
+    def validate_refresh_reuse_grace(cls, value: int) -> int:
+        if not 0 <= value <= 60:
+            raise ValueError(
+                "REFRESH_REUSE_GRACE_SECONDS must be between 0 and 60."
+            )
         return value
 
     @field_validator("ALLOWED_ORIGINS")
