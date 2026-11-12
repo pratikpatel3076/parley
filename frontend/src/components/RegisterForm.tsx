@@ -19,11 +19,36 @@ interface RegisterFormProps {
   onSwitchToLogin: () => void
 }
 
+const POSSIBLE_SUCCESS_MESSAGE =
+  "Registration may have succeeded. Try logging in. If login says invalid credentials, use 'Remove this device's key' and register again."
+
+const DEFINITIVE_FAILURE_STATUSES = new Set([400, 409, 413, 422, 429])
+
+/**
+ * A failure is definitive only when the server refused the request with a
+ * status that cannot have created the account, or when no request was sent.
+ * Network failures, timeouts, 5xx, and failures after a success response leave
+ * the local key in place so a retry can still log in.
+ */
+function isDefinitiveFailure(error: unknown, requestSent: boolean): boolean {
+  if (!requestSent) {
+    return true
+  }
+  return (
+    error instanceof ApiError &&
+    DEFINITIVE_FAILURE_STATUSES.has(error.status)
+  )
+}
+
 function registrationError(error: unknown): string {
   if (error instanceof ApiError) {
     switch (error.status) {
+      case 400:
+        return 'The server rejected the registration'
       case 409:
         return 'That username is taken'
+      case 413:
+        return 'The registration request was too large'
       case 422:
         return 'The server rejected the username or key'
       case 429:
@@ -85,6 +110,8 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
     setBusy(true)
 
     let saved = false
+    let requestSent = false
+    let serverResponded = false
     try {
       setPhase('Loading the crypto engine…')
       const crypto = await loadCrypto()
@@ -121,11 +148,34 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
         usernameValue,
         getKdfIterations(),
       )
+      requestSent = true
       const response = await register({
         username: usernameValue,
         authSecret,
         publicKey: identity.publicKey,
       })
+      // The request resolved, so the server may have created the account. From
+      // this point on, the local key must never be deleted automatically.
+      serverResponded = true
+
+      if (
+        typeof response.user?.public_key !== 'string' ||
+        response.user.public_key !== identity.publicKey
+      ) {
+        setError(
+          'The server reports a different key for this account than this device holds. Refusing to unlock. The local key was kept.',
+        )
+        return
+      }
+      if (
+        typeof response.user.username !== 'string' ||
+        response.user.username !== usernameValue
+      ) {
+        setError(
+          'The server returned a different username than the one submitted. Refusing to unlock. The local key was kept.',
+        )
+        return
+      }
 
       unlock({
         username: response.user.username,
@@ -137,7 +187,9 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
         .getState()
         .setUnlocked(response.user.username, identity.publicKey)
     } catch (cause) {
-      if (saved) {
+      const definitive =
+        !serverResponded && isDefinitiveFailure(cause, requestSent)
+      if (saved && definitive) {
         let cleanupFailed = false
         try {
           const crypto = await loadCrypto()
@@ -150,6 +202,9 @@ export function RegisterForm({ onSwitchToLogin }: RegisterFormProps) {
             ? 'Registration failed and the local key could not be removed. Clear this site’s data before trying again.'
             : registrationError(cause),
         )
+      } else if (saved) {
+        // Network error, timeout, 5xx, or a failure after the server responded.
+        setError(POSSIBLE_SUCCESS_MESSAGE)
       } else {
         setError(registrationError(cause))
       }

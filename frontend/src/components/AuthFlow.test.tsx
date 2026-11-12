@@ -5,7 +5,9 @@ import App from '../App'
 import {
   deleteIdentity,
   generateIdentity,
+  getContact,
   loadIdentity,
+  pinOrCheckContact,
   saveIdentity,
   wrapSecretKey,
   type Identity,
@@ -145,6 +147,94 @@ describe('register', () => {
     expect(isUnlocked()).toBe(false)
   })
 
+  it('deletes the local identity after a definitive 422', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse(422, { detail: 'Invalid publicKey' }),
+    )
+
+    openRegisterScreen()
+    fillRegister(STRONG_PASSWORD)
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(registerButton())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The server rejected the username or key',
+    )
+    expect(await loadIdentity(USERNAME)).toBeUndefined()
+  })
+
+  it('keeps the local identity after a network error', async () => {
+    fetchMock.mockImplementation(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+
+    openRegisterScreen()
+    fillRegister(STRONG_PASSWORD)
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(registerButton())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Registration may have succeeded/,
+    )
+    expect(await loadIdentity(USERNAME)).toBeDefined()
+  })
+
+  it('keeps the local identity when a 201 reports a different key', async () => {
+    const other = await generateIdentity()
+    fetchMock.mockImplementation(async () =>
+      jsonResponse(201, {
+        user: {
+          id: 'user-id',
+          username: USERNAME,
+          public_key: other.publicKey,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      }),
+    )
+
+    openRegisterScreen()
+    fillRegister(STRONG_PASSWORD)
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(registerButton())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /different key for this account/,
+    )
+    const stored = await loadIdentity(USERNAME)
+    expect(stored).toBeDefined()
+    expect(stored?.publicKey).not.toBe(other.publicKey)
+    expect(isUnlocked()).toBe(false)
+  })
+
+  it('keeps the local identity when a 201 reports a different username', async () => {
+    fetchMock.mockImplementation(
+      async (_input: string, init: RequestInit | undefined) => {
+        const body = JSON.parse(String(init?.body)) as {
+          publicKey: string
+        }
+        return jsonResponse(201, {
+          user: {
+            id: 'user-id',
+            username: 'someone_else',
+            public_key: body.publicKey,
+            created_at: '2026-01-01T00:00:00Z',
+          },
+        })
+      },
+    )
+
+    openRegisterScreen()
+    fillRegister(STRONG_PASSWORD)
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(registerButton())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /different username/,
+    )
+    expect(await loadIdentity(USERNAME)).toBeDefined()
+    expect(isUnlocked()).toBe(false)
+  })
+
   it('clears the password fields after submit', async () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse(409, { detail: 'Username is already taken' }),
@@ -203,6 +293,77 @@ describe('login', () => {
     expect(JSON.stringify(useSessionStore.getState())).not.toContain(
       identity.secretKey,
     )
+  })
+
+  it('refuses to unlock when the server reports a different key', async () => {
+    await createStoredIdentity(STRONG_PASSWORD)
+    const other = await generateIdentity()
+
+    fetchMock.mockImplementation(async (input: string) => {
+      const url = String(input)
+      if (url === '/api/v1/auth/logout') {
+        return jsonResponse(200, { status: 'ok' })
+      }
+      return jsonResponse(200, {
+        user: {
+          id: 'user-id',
+          username: USERNAME,
+          public_key: other.publicKey,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      })
+    })
+
+    render(<App />)
+    fillLogin(STRONG_PASSWORD)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The server reports a different key for this account than this device holds',
+    )
+    expect(isUnlocked()).toBe(false)
+    expect(
+      calls().some(([url]) => url === '/api/v1/auth/logout'),
+    ).toBe(true)
+  })
+})
+
+describe('remove this device key', () => {
+  it('requires the typed username, deletes the identity and pins, and never calls fetch', async () => {
+    await createStoredIdentity(STRONG_PASSWORD)
+    const contact = await generateIdentity()
+    await pinOrCheckContact(USERNAME, 'bob', contact.publicKey)
+    expect(await getContact(USERNAME, 'bob')).toBeDefined()
+
+    render(<App />)
+    fireEvent.change(screen.getByLabelText('Username'), {
+      target: { value: USERNAME },
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Remove this device.s key for alice/,
+      }),
+    )
+
+    const removeButton = screen.getByRole('button', { name: 'Remove key' })
+    expect(removeButton).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText(`Type ${USERNAME} to confirm`), {
+      target: { value: 'not-alice' },
+    })
+    expect(removeButton).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText(`Type ${USERNAME} to confirm`), {
+      target: { value: USERNAME },
+    })
+    fireEvent.click(removeButton)
+
+    expect(
+      await screen.findByText(`Removed this device’s key for ${USERNAME}.`),
+    ).toBeInTheDocument()
+    expect(await loadIdentity(USERNAME)).toBeUndefined()
+    expect(await getContact(USERNAME, 'bob')).toBeUndefined()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 
