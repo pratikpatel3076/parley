@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     FRONTEND_URL: str = "http://localhost:5173"
     ALLOWED_ORIGINS: list[str] = Field(
-        default_factory=lambda: ["http://localhost:5173"]
+        default_factory=lambda: ["https://localhost:5173"]
     )
     COOKIE_SECURE: bool = True
 
@@ -101,31 +101,6 @@ class Settings(BaseSettings):
             )
         return value
 
-    @field_validator("ALLOWED_ORIGINS")
-    @classmethod
-    def validate_allowed_origins(cls, value: list[str]) -> list[str]:
-        for origin in value:
-            if "*" in origin:
-                raise ValueError("ALLOWED_ORIGINS must not contain wildcards.")
-            parts = urlsplit(origin)
-            canonical = f"{parts.scheme}://{parts.netloc}"
-            if (
-                parts.scheme not in {"http", "https"}
-                or not parts.netloc
-                or parts.path
-                or parts.query
-                or parts.fragment
-                or parts.username
-                or parts.password
-                or origin != canonical
-            ):
-                raise ValueError(
-                    "ALLOWED_ORIGINS entries must be exact origins with "
-                    "scheme, host, and optional port, and no path "
-                    "(for example https://app.example.com)."
-                )
-        return value
-
     @model_validator(mode="after")
     def validate_security_settings(self) -> "Settings":
         if not self.DEBUG and not self.COOKIE_SECURE:
@@ -135,6 +110,8 @@ class Settings(BaseSettings):
             )
         if not self.ALLOWED_ORIGINS:
             raise ValueError("ALLOWED_ORIGINS must contain at least one origin.")
+        for origin in self.ALLOWED_ORIGINS:
+            _validate_origin(origin, debug=self.DEBUG)
         if self.AUTH_RATE_LIMIT_ATTEMPTS < 1:
             raise ValueError("AUTH_RATE_LIMIT_ATTEMPTS must be at least 1.")
         if self.AUTH_RATE_LIMIT_WINDOW_SECONDS < 1:
@@ -142,6 +119,77 @@ class Settings(BaseSettings):
         if self.MAX_CIPHERTEXT_BYTES < 1:
             raise ValueError("MAX_CIPHERTEXT_BYTES must be at least 1.")
         return self
+
+
+_LOCAL_HTTP_HOSTS = {"localhost", "127.0.0.1"}
+
+
+def _validate_origin(origin: str, *, debug: bool) -> None:
+    """Reject anything that is not an exact lowercase scheme://host[:port]."""
+    if not isinstance(origin, str) or not origin.strip():
+        raise ValueError(
+            "ALLOWED_ORIGINS entries must be non-empty origin strings."
+        )
+    if origin != origin.strip():
+        raise ValueError(
+            "ALLOWED_ORIGINS entries must not contain leading or trailing "
+            "whitespace."
+        )
+    if "*" in origin:
+        raise ValueError("ALLOWED_ORIGINS must not contain wildcards.")
+    if origin == "null":
+        raise ValueError(
+            'ALLOWED_ORIGINS must not contain the literal "null" origin.'
+        )
+
+    scheme, separator, remainder = origin.partition("://")
+    if separator != "://" or scheme not in {"http", "https"}:
+        raise ValueError(
+            "ALLOWED_ORIGINS entries must start with an exact lowercase "
+            "http:// or https:// scheme."
+        )
+    if remainder != remainder.strip() or not remainder:
+        raise ValueError(
+            "ALLOWED_ORIGINS entries must contain a host and no whitespace."
+        )
+
+    try:
+        parts = urlsplit(origin)
+        port = parts.port
+    except ValueError:
+        raise ValueError(
+            "ALLOWED_ORIGINS entries must contain a valid host and port."
+        ) from None
+
+    canonical = f"{parts.scheme}://{parts.netloc}"
+    if (
+        parts.scheme != scheme
+        or not parts.netloc
+        or parts.netloc.endswith(":")
+        or parts.netloc != parts.netloc.lower()
+        or parts.path
+        or parts.query
+        or parts.fragment
+        or parts.username
+        or parts.password
+        or origin != canonical
+    ):
+        raise ValueError(
+            "ALLOWED_ORIGINS entries must be exact origins in lowercase with "
+            "scheme, host, and optional port, and no path, query, or "
+            "fragment (for example https://app.example.com)."
+        )
+    if port is not None and not 1 <= port <= 65_535:
+        raise ValueError(
+            "ALLOWED_ORIGINS entries must use a port between 1 and 65535."
+        )
+    if scheme == "http" and not (
+        debug and parts.hostname in _LOCAL_HTTP_HOSTS
+    ):
+        raise ValueError(
+            "http:// origins are allowed only when DEBUG=True and the host "
+            "is localhost or 127.0.0.1."
+        )
 
 
 @lru_cache

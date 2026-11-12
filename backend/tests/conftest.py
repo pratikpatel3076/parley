@@ -12,9 +12,7 @@ os.environ["SECRET_KEY"] = "test-" + "x" * 48
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB.as_posix()}"
 os.environ["DEBUG"] = "False"
 os.environ["COOKIE_SECURE"] = "True"
-os.environ["ALLOWED_ORIGINS"] = (
-    '["https://testserver", "http://localhost:5173"]'
-)
+os.environ["ALLOWED_ORIGINS"] = '["https://testserver"]'
 os.environ["AUTH_RATE_LIMIT_ATTEMPTS"] = "3"
 os.environ["AUTH_RATE_LIMIT_WINDOW_SECONDS"] = "60"
 

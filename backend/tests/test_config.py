@@ -1,7 +1,23 @@
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
+
+
+def _settings_with_origins(
+    monkeypatch,
+    origins: list[str],
+    *,
+    debug: bool = False,
+) -> Settings:
+    monkeypatch.setenv("SECRET_KEY", "test-" + "x" * 48)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+    monkeypatch.setenv("DEBUG", "True" if debug else "False")
+    monkeypatch.setenv("COOKIE_SECURE", "True")
+    monkeypatch.setenv("ALLOWED_ORIGINS", json.dumps(origins))
+    return Settings(_env_file=None)
 
 
 def test_settings_raise_when_required_values_are_missing(monkeypatch) -> None:
@@ -154,6 +170,80 @@ def test_settings_refresh_lifetime_is_configurable(monkeypatch) -> None:
     settings = Settings(_env_file=None)
 
     assert settings.REFRESH_TOKEN_EXPIRE_DAYS == 7
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://app.example.com/",
+        "https://app.example.com/login",
+        "https://app.example.com?debug=1",
+        "https://app.example.com#section",
+        "https://*.example.com",
+        "null",
+        "NULL",
+        "HTTPS://app.example.com",
+        "https://App.Example.com",
+        "",
+        "   ",
+        " https://app.example.com",
+        "https://app.example.com ",
+        "https://app.example.com:70000",
+        "https://app.example.com:",
+        "https://user:pass@app.example.com",
+        "ftp://app.example.com",
+        "app.example.com",
+    ],
+)
+def test_settings_reject_malformed_origins(monkeypatch, origin: str) -> None:
+    with pytest.raises(ValidationError):
+        _settings_with_origins(monkeypatch, [origin])
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["http://app.example.com", "http://localhost:5173", "http://127.0.0.1:8000"],
+)
+def test_settings_reject_http_origins_outside_debug(monkeypatch, origin: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _settings_with_origins(monkeypatch, [origin])
+
+    message = str(exc_info.value)
+    assert "DEBUG=True" in message
+    assert "localhost or 127.0.0.1" in message
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["http://localhost:5173", "http://127.0.0.1:8000"],
+)
+def test_settings_accept_http_localhost_in_debug(monkeypatch, origin: str) -> None:
+    settings = _settings_with_origins(monkeypatch, [origin], debug=True)
+
+    assert settings.ALLOWED_ORIGINS == [origin]
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://app.example.com",
+        "https://app.example.com:8443",
+        "https://localhost:5173",
+        "https://127.0.0.1:8443",
+    ],
+)
+def test_settings_accept_exact_https_origins(monkeypatch, origin: str) -> None:
+    settings = _settings_with_origins(monkeypatch, [origin])
+
+    assert settings.ALLOWED_ORIGINS == [origin]
+
+
+def test_settings_accept_multiple_mixed_valid_origins(monkeypatch) -> None:
+    origins = ["https://app.example.com", "http://localhost:5173"]
+
+    settings = _settings_with_origins(monkeypatch, origins, debug=True)
+
+    assert settings.ALLOWED_ORIGINS == origins
 
 
 @pytest.mark.parametrize("value", ["-1", "61", "120"])
