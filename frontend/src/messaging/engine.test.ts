@@ -6,6 +6,8 @@ import { ApiError } from '../api/client'
 import {
   InvalidInputError,
   KeyChangedError,
+  decryptReceived,
+  decryptSent,
   encryptMessage,
   generateIdentity,
   getContact,
@@ -141,6 +143,7 @@ interface Harness {
   visibility: { visible: boolean }
   waits: number[]
   encryptSpy: ReturnType<typeof vi.fn>
+  decryptSpy: ReturnType<typeof vi.fn>
   engine: MessageEngine
 }
 
@@ -171,6 +174,9 @@ async function createHarness(): Promise<Harness> {
   const visibility = { visible: true }
   const encryptSpy = vi.fn(
     (input: Parameters<typeof encryptMessage>[0]) => encryptMessage(input),
+  )
+  const decryptSpy = vi.fn(
+    (input: Parameters<typeof decryptReceived>[0]) => decryptReceived(input),
   )
 
   const deps: Partial<EngineDeps> = {
@@ -229,6 +235,10 @@ async function createHarness(): Promise<Harness> {
       return { id, ackedAt: '2026-01-01T00:00:02Z' }
     }),
     encryptMessage: encryptSpy,
+    decryptReceived: decryptSpy,
+    decryptSent: vi.fn(
+      (input: Parameters<typeof decryptSent>[0]) => decryptSent(input),
+    ),
     now: () => clock.now,
     randomUUID: () => randomUUID(),
     isVisible: () => visibility.visible,
@@ -260,6 +270,7 @@ async function createHarness(): Promise<Harness> {
     visibility,
     waits,
     encryptSpy,
+    decryptSpy,
     engine,
   }
 }
@@ -488,6 +499,8 @@ describe('inbox ingestion', () => {
       'decryption_failed',
       'envelope_mismatch',
     ])
+    // Only the row that decrypted and was stored may be acknowledged.
+    expect(harness.server.ackCalls).toEqual([good.id])
   })
 
   it('retries a failed ack on the next pass without hiding the message', async () => {
@@ -557,7 +570,14 @@ describe('key changes', () => {
       recipient: harness.owner,
       body: 'old key',
     })
-    harness.server.inbox = [oldRow]
+    const newRow = await makeRow({
+      from: harness.carol,
+      to: harness.alice,
+      sender: harness.peer,
+      recipient: harness.owner,
+      body: 'new key',
+    })
+    harness.server.inbox = [oldRow, newRow]
 
     await harness.engine.start()
 
@@ -568,23 +588,19 @@ describe('key changes', () => {
     })
     expect(current?.blocked?.pinnedSafetyNumber).toBeTruthy()
     expect(current?.blocked?.seenSafetyNumber).toBeTruthy()
-    expect(current?.items[0]).toMatchObject({
-      kind: 'error',
-      reason: 'key_changed',
-    })
+    expect(current?.items).toHaveLength(2)
+    expect(current?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'error', reason: 'key_changed' }),
+        expect.objectContaining({ kind: 'error', reason: 'key_changed' }),
+      ]),
+    )
+    // A blocked peer's rows stay unacked until the user accepts the new key.
+    expect(harness.server.ackCalls).toHaveLength(0)
 
     await expect(
       harness.engine.send(harness.peer, 'blocked'),
     ).rejects.toBeInstanceOf(KeyChangedError)
-
-    const newRow = await makeRow({
-      from: harness.carol,
-      to: harness.alice,
-      sender: harness.peer,
-      recipient: harness.owner,
-      body: 'new key',
-    })
-    harness.server.inbox = [oldRow, newRow]
 
     await harness.engine.acknowledgePeerKeyChange(harness.peer)
 
@@ -594,6 +610,13 @@ describe('key changes', () => {
     expect(current?.items).toContainEqual(
       expect.objectContaining({ kind: 'message', body: 'new key' }),
     )
+    // The row encrypted with the accepted key is now shown and acked once;
+    // the row encrypted with the old key remains an unacked error.
+    expect(harness.server.ackCalls).toEqual([newRow.id])
+
+    await harness.engine.syncNow()
+    expect(harness.server.ackCalls).toEqual([newRow.id])
+
     expect((await getContact(harness.owner, harness.peer))?.publicKey).toBe(
       harness.carol.publicKey,
     )

@@ -650,7 +650,6 @@ export class MessageEngine {
         reason: 'key_changed',
         createdAt: row.createdAt,
       })
-      await this.ackIfNeeded(row)
       return
     }
 
@@ -674,6 +673,10 @@ export class MessageEngine {
         body: decrypted.plaintext,
         createdAt: row.createdAt,
       })
+      // Acknowledge only after the ciphertext decrypted and the plaintext was
+      // stored. Error rows and blocked-peer rows stay unacked so a later
+      // re-sync can process them after the user accepts a changed key.
+      await this.ackIfNeeded(row)
     } catch (error) {
       if (!this.isCurrent(generation)) {
         return
@@ -687,8 +690,6 @@ export class MessageEngine {
         createdAt: row.createdAt,
       })
     }
-
-    await this.ackIfNeeded(row)
   }
 
   private async ingestSent(
