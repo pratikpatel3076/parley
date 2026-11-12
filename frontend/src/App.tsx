@@ -1,8 +1,8 @@
 import { useState } from 'react'
 
+import { ChatScreen } from './components/ChatScreen'
 import { LoginForm } from './components/LoginForm'
 import { RegisterForm } from './components/RegisterForm'
-import { SessionPanel } from './components/SessionPanel'
 import { useSessionStore } from './session/store'
 
 type Screen = 'login' | 'register'
@@ -13,6 +13,10 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('login')
 
   const signedIn = status === 'unlocked' && username !== null
+
+  if (signedIn) {
+    return <ChatScreen username={username} />
+  }
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-slate-950 px-6 py-12 text-slate-100">
@@ -27,9 +31,7 @@ export default function App() {
         </p>
 
         <div className="mt-8">
-          {signedIn ? (
-            <SessionPanel username={username} />
-          ) : screen === 'login' ? (
+          {screen === 'login' ? (
             <LoginForm onSwitchToRegister={() => setScreen('register')} />
           ) : (
             <RegisterForm onSwitchToLogin={() => setScreen('login')} />
