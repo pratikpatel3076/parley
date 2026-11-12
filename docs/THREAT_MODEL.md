@@ -2,10 +2,12 @@
 
 Status: design document for the protocol in [PROTOCOL.md](PROTOCOL.md). The
 backend MVP implements the server side. The frontend implements the client
-crypto layer (`frontend/src/crypto/`) and the register, login, and logout
-screens, so account creation and sign-in work end to end; messaging is not
-implemented. This model describes the design and its limits; it is not a claim
-that the code has been audited.
+crypto layer (`frontend/src/crypto/`), the register, login, and logout screens,
+and the 1:1 messaging engine and chat UI (`frontend/src/messaging/`,
+`frontend/src/components/chat/`), so account creation, sign-in, sending,
+polling, decryption, and key-change acknowledgement work end to end. This model
+describes the design and its limits; it is not a claim that the code has been
+audited.
 
 ## 1. Scope
 
@@ -120,9 +122,9 @@ Everything else is explicitly out of scope or a known limitation.
 ### 3.4 Stolen device
 
 - **Locked device / offline disk image:** attacker gets IndexedDB, which
-  contains the wrapped private key, contact pins, and cached ciphertext. The
-  private key requires the password-derived `wrapKey`. A weak password can be
-  guessed offline.
+  contains the wrapped private key and contact pins. It does not contain a
+  message cache. The private key requires the password-derived `wrapKey`. A weak
+  password can be guessed offline.
 - **Unlocked device or active session:** the unwrapped private key and decrypted
   messages are in process memory. The attacker can read them, screenshot them,
   or use the open session.
@@ -334,6 +336,13 @@ safe. A strong, unique password remains part of the security contract.
   one bucket and one client could exhaust it for others.
 - The safety number proves both parties see the same two public keys; it does
   not prove the keys belong to the humans the usernames suggest.
+- There is no local message cache. Decrypted history lives in memory only, is
+  cleared on lock/logout, and is re-fetched and re-decrypted after a reload. The
+  server therefore sees repeated history reads, and a client that closes
+  mid-send loses the pending plaintext and ciphertext. The client does not
+  persist the recipient key used for each sent message, so after a key change is
+  acknowledged, older sent rows may be undecryptable by their sender and appear
+  as visible errors.
 
 ## 8. Out-of-scope feature checklist
 

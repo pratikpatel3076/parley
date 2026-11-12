@@ -2,13 +2,14 @@
 
 Status: the backend MVP implements the server side of sections 3.2, 5, 6.1,
 8.2-8.5, and 9, with the backend deviations listed in section 16. The frontend
-implements the client crypto layer in `frontend/src/crypto/` (keypair, wrapping,
-auth-secret derivation, envelopes, safety numbers, password policy, IndexedDB
-storage) and the register, login, and logout flows in the running app (sections
-3.1, 4, 6, 7, and 8.1 for authentication). Message send/receive (section 8.1
-beyond auth) is not implemented yet. This document is the contract the
-implementation must satisfy. Security claims and limits are in
-[THREAT_MODEL.md](THREAT_MODEL.md).
+implements the client crypto layer in `frontend/src/crypto/`, the register,
+login, and logout flows (sections 3.1, 4, 6, 7, and 8.1 for authentication), and
+the 1:1 messaging client: typed API calls, polling, decryption, deduplication,
+retry-safe sending, key-change blocking, and the chat UI in
+`frontend/src/messaging/` and `frontend/src/components/chat/`. There is no local
+message cache; decrypted history lives in memory only and is cleared on lock or
+logout. This document is the contract the implementation must satisfy. Security
+claims and limits are in [THREAT_MODEL.md](THREAT_MODEL.md).
 
 Protocol version: `1`.
 
@@ -416,8 +417,11 @@ first contact.
   lie about the key; the safety number is the only way for users to detect it.
 
 There is no key rotation protocol in the MVP. A new key means old ciphertext may
-no longer decrypt; the client should keep the recipient public key it used for
-each sent message so the sender can still decrypt their own sent messages.
+no longer decrypt. The client does **not** persist the recipient public key used
+for each sent message; sent history is decrypted with the current pinned key. If
+the contact key changed and the user accepted the new key, messages sent under
+the old key can no longer be decrypted by the sender and are shown as an error
+rather than silently dropped.
 
 ## 7. Safety number
 
@@ -470,13 +474,17 @@ wrong contact, or a tampered client.
    ```
    `crypto_box_easy` returns the 16-byte authenticator followed by the
    ciphertext.
-6. Persist the `client_message_id`, envelope timestamp, recipient public key
-   used, nonce, and ciphertext with the sent record.
-7. `POST /api/v1/messages` (section 8.2). On network failure, retry with the same
-   `client_message_id`, nonce, and ciphertext; do not re-encrypt unless the
-   recipient key changed (which is blocked until acknowledged). The server
-   deduplicates the retry on `(sender, client_message_id)` and returns the
-   original row, so the client does not create a duplicate.
+6. Keep the `client_message_id`, envelope timestamp, recipient username, nonce,
+   and ciphertext in memory with the pending send. This MVP has no local message
+   cache: the pending payload is dropped when the vault locks, the user signs
+   out, or the tab closes. A failed send can be retried manually only while that
+   in-memory payload still exists.
+7. `POST /api/v1/messages` (section 8.2). On network failure or a `5xx`
+   response, retry with the same `client_message_id`, nonce, and ciphertext; do
+   not re-encrypt unless the recipient key changed (which is blocked until
+   acknowledged). The server deduplicates the retry on
+   `(sender, client_message_id)` and returns the original row, so the client does
+   not create a duplicate. A `4xx` response (including `409`) is not retried.
 
 The sender can decrypt their own sent message later:
 
@@ -485,8 +493,12 @@ plaintext = crypto_box_open_easy(ciphertext, nonce, recipientPublicKey, mySecret
 ```
 
 This works because the box shared secret is symmetric in the two keypairs. The
-client must use the recipient public key that was current when the message was
-sent, not a newly fetched key.
+design requires the recipient public key that was current when the message was
+sent, not a newly fetched key. The MVP does not persist that per-message key, so
+it decrypts sent history with the current pinned key; after an accepted key
+change, older sent rows may fail to decrypt and are shown as errors. Keeping the
+per-message key would require a local message cache, which this MVP deliberately
+does not have.
 
 #### 8.1.1 Plaintext envelope
 
@@ -628,8 +640,10 @@ Client behavior:
 1. Fetch the sender's key (section 6) and check the pin.
 2. If the key matches, decrypt with `crypto_box_open_easy(ciphertext, nonce,
    senderPublicKey, mySecretKey)`.
-3. Deduplicate by message id.
-4. Advance the cursor only after the message is persisted/displayed locally.
+3. Deduplicate by `(direction, client_message_id)`.
+4. Advance the in-memory cursor only after the row is displayed in the message
+   store, as either a message or a visible error. The cursor is not persisted;
+   there is no local message cache.
 5. If decryption fails, show an authentication warning; do not display
    ciphertext as plaintext.
 
@@ -650,11 +664,18 @@ returns `404`. The operation is idempotent and returns the message id and
 
 ### 8.6 Polling transport
 
-- The client polls `GET /messages/inbox?after=<cursor>` every 5 seconds while the
-  tab is visible, with 0–1 seconds of random jitter.
-- On errors, use exponential backoff from 5 seconds to 60 seconds.
+- Each sync pass polls both `GET /messages/inbox?after=<cursor>` and
+  `GET /messages/sent?after=<cursor>`, following cursors up to a hard cap. The
+  inbox interval is 5 seconds while the tab is visible, with 0–1 seconds of
+  random jitter.
+- On errors, use exponential backoff from 5 seconds to 60 seconds. A successful
+  pass resets the interval to 5 seconds.
 - Pause polling when the document is hidden; poll immediately on visibility
   resume.
+- Cursors and pending payloads are in memory only. A reload re-fetches the
+  server's history and decrypts it again; there is no local message cache. A
+  send that was accepted by the server is reconciled with the local echo on the
+  next sent-history sync by `client_message_id`.
 - There are no WebSockets, server-sent events, push notifications, typing
   indicators, or read receipts in the MVP.
 - Delivery is at-least-once. The client deduplicates and tolerates reordering.
@@ -889,6 +910,23 @@ above. They are explicit because the code must not claim more than it does.
   that user before returning `401`, as a theft signal.
 - **Timestamps.** `client_ts` is normalized to UTC when stored; message ordering
   uses the server's `created_at`, never `client_ts`.
+- **No local message cache.** Decrypted messages, cursors, and pending send
+  payloads live only in memory. A reload or re-login re-fetches and decrypts the
+  server's history. There is no IndexedDB, localStorage, sessionStorage, cookie,
+  URL, or log copy of message plaintext or ciphertext.
+- **Sent history uses the current pin.** The client does not persist the
+  recipient public key that was used for each sent message. After a key change is
+  acknowledged, older sent rows encrypted to the previous key cannot be
+  decrypted by the sender and are shown as errors. This is a known MVP
+  limitation, not a guarantee of historical sent-message readability.
+- **Retry budget.** A send makes the initial attempt plus up to three automatic
+  retries for network errors and `5xx` responses, with 500 ms, 1 s, and 2 s
+  delays, then leaves a failed row with a manual Retry action while the in-memory
+  payload exists. Acknowledgements retry twice (500 ms, 1 s) for the same
+  retryable errors; `4xx` responses are not retried.
+- **Key-change acknowledgement re-syncs history.** Accepting a new peer key
+  replaces the pin, clears the block, resets both in-memory cursors, and runs a
+  sync so previously hidden rows can be decrypted with the accepted key.
 
 ## 17. Client crypto implementation notes
 
@@ -920,3 +958,28 @@ custom primitives.
   are no longer needed. JavaScript strings, base64 wrappers, and `CryptoKey`
   handles cannot be zeroed, and the engine or garbage collector may retain
   copies. Zeroization is best effort, not a guarantee.
+
+## 18. Client messaging implementation notes
+
+The messaging engine lives in `frontend/src/messaging/` and the chat UI in
+`frontend/src/components/chat/`. All cryptography is called through
+`frontend/src/crypto/`; components never call libsodium or Web Crypto directly.
+
+- **State.** A Zustand store holds conversations, per-conversation items, sync
+  state, and key-change blocks. Plaintext exists only in this in-memory store
+  and in the engine's pending send payloads. It is cleared on lock, logout, and
+  engine stop.
+- **Deduplication.** Rows are matched by direction and `client_message_id`. A
+  local send echo is replaced by the server row when sent history catches up; a
+  later successful decrypt replaces an earlier visible error for the same row.
+- **Send retry safety.** The engine encrypts once, keeps the exact nonce,
+  ciphertext, `client_ts`, and `client_message_id`, and reuses that payload for
+  every retry. A `4xx` response is final and drops the payload, because replaying
+  it cannot succeed.
+- **Acknowledgements.** Inbox rows are acknowledged after they are displayed as
+  a message or a visible error. Already-acknowledged rows are skipped.
+- **Key changes.** A changed sender or recipient key blocks sending and
+  automatic decryption, records both safety numbers, and requires explicit user
+  acknowledgement before the pin is replaced and history is re-synced.
+- **Plain text only.** The UI renders message bodies as text nodes. It never uses
+  `dangerouslySetInnerHTML` or an HTML renderer.

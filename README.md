@@ -9,12 +9,13 @@ matches the claims.
 what was reused, what was changed, and the raw-password weakness Parley must not
 inherit.
 
-> Status: **auth screens implemented; chat not yet.** The backend implements
+> Status: **1:1 messaging implemented in the browser.** The backend implements
 > registration/login, refresh rotation, the public-key directory, and opaque
 > message storage per `docs/PROTOCOL.md`. The frontend implements the client
-> crypto layer and the register, login, and logout screens. Sending and
-> receiving messages is not implemented. Nothing here is audited or
-> production-ready.
+> crypto layer, the register, login, and logout screens, and the 1:1 messaging
+> engine and chat UI: sending, polling, decryption, deduplication, retry-safe
+> sends, and key-change acknowledgement. Decrypted messages are kept in memory
+> only, not cached locally. Nothing here is audited or production-ready.
 
 ## What it is
 
@@ -42,6 +43,8 @@ When the protocol is implemented as specified:
 - A changed contact key is surfaced instead of silently trusted.
 - The server does not store a wrapped copy of the private key, so a server
   database leak alone does not provide an offline-guessable key file.
+- Message plaintext is never written to localStorage, sessionStorage,
+  IndexedDB, cookies, the URL, or logs, and it is cleared on lock/logout.
 
 These are claims about the design, not a substitute for review. The threat model
 lists the assumptions and residual risks.
@@ -66,7 +69,7 @@ list and [docs/PROTOCOL.md](docs/PROTOCOL.md) section 14 for deferred work.
 | Dev database | SQLite (`sqlite+aiosqlite`) |
 | Backend tests | pytest, httpx TestClient |
 | Crypto | libsodium-wrappers for messaging; Web Crypto PBKDF2 + AES-256-GCM for private-key wrapping |
-| Transport (planned) | REST + polling |
+| Transport | REST + polling |
 
 The frontend lazy-loads libsodium on first use, so the sign-in screen paints
 before the crypto engine is downloaded and initialised.
@@ -144,8 +147,12 @@ parley/
 │   └── tests/            pytest placeholder and config tests
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx       auth screen switching
-│   │   ├── stores/       legacy Zustand scaffold store
+│   │   ├── api/          typed HTTP client with refresh
+│   │   ├── components/   auth screens and chat UI
+│   │   ├── crypto/       libsodium/Web Crypto primitives and storage
+│   │   ├── messaging/    API shapes, engine, in-memory store
+│   │   ├── session/      vault and session store
+│   │   ├── App.tsx       auth/chat switching
 │   │   └── test/         vitest setup
 │   └── vite.config.ts    Vite, Tailwind, and vitest config
 ├── docs/
@@ -178,9 +185,9 @@ parley/
 | Monorepo scaffold with health endpoint and placeholder tests | Done |
 | Client crypto layer (wrapping, envelopes, storage) | Done |
 | Registration, login, and logout screens | Done |
-| 1:1 message send/receive with libsodium | Planned |
-| Contact pinning and safety numbers | Planned |
-| End-to-end protocol tests | Planned |
+| 1:1 message send/receive with libsodium | Done |
+| Contact pinning and safety numbers | Done |
+| End-to-end protocol tests | Backend and frontend suites pass |
 | Docker packaging | Deferred until there is something to package |
 
 ## License

@@ -26,10 +26,22 @@ All notable changes to Parley are documented here. Format follows
 - Register, login, and logout screens with inline username validation, a live
   strength meter, the no-recovery acknowledgement, local key unwrapping before
   login, and safe errors.
+- Typed messaging API client for send, inbox, sent, and acknowledgement
+  endpoints, including strict response parsing and bounded cursor pagination in
+  `frontend/src/messaging/api.ts`.
+- Message engine with 5-second visibility-aware polling, exponential backoff to
+  60 seconds, decryption and deduplication, at-least-once acknowledgement, and
+  retry-safe sends that reuse one encrypted payload per `client_message_id`.
+- Chat UI with a conversation list, plain-text message view, composer with a
+  60,000-byte limit, failed-send retry, and an explicit key-change banner that
+  shows both safety numbers and blocks sending until acknowledged.
 - Root `.env.example`, `.gitignore`, `README.md`, and this changelog.
 
 ### Security
 
+- Decrypted messages are held only in an in-memory store and are cleared on
+  lock, logout, and engine stop. There is no local message cache, and message
+  bodies are rendered as plain text, never as HTML.
 - Documented the web-delivery trust limit in `docs/THREAT_MODEL.md`: a malicious
   or compromised app host can serve code that reads the unlocked key, XSS
   defeats the key-protection model, and native clients, SRI with pinned builds,
