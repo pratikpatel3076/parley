@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   DecryptionError,
@@ -216,6 +216,104 @@ describe('key wrapping', () => {
         'right-password-123',
       ),
     ).rejects.toBeInstanceOf(InvalidInputError)
+  })
+
+  it('accepts the lower iteration bound of 1', async () => {
+    const alice = await generateIdentity()
+    const blob = await wrapSecretKey(
+      alice.secretKey,
+      alice.publicKey,
+      'bounds-password-123',
+      { iterations: 1 },
+    )
+
+    await expect(
+      unwrapSecretKey(blob, alice.publicKey, 'bounds-password-123'),
+    ).resolves.toBe(alice.secretKey)
+  })
+})
+
+describe('wrapped key bounds', () => {
+  async function validBlob(): Promise<{
+    blob: WrappedKey
+    publicKey: string
+  }> {
+    const alice = await generateIdentity()
+    const blob = await wrapSecretKey(
+      alice.secretKey,
+      alice.publicKey,
+      'bounds-password-123',
+      { iterations: 1 },
+    )
+    return { blob, publicKey: alice.publicKey }
+  }
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['just above the maximum', 10_000_001],
+    ['enormous', Number.MAX_SAFE_INTEGER],
+  ])('rejects iterations that are %s', async (_label, iterations) => {
+    const { blob, publicKey } = await validBlob()
+
+    await expect(
+      unwrapSecretKey(
+        { ...blob, iterations } as WrappedKey,
+        publicKey,
+        'bounds-password-123',
+      ),
+    ).rejects.toBeInstanceOf(InvalidInputError)
+  })
+
+  it.each([
+    ['salt', 'empty', b64(new Uint8Array(0))],
+    ['salt', '15 bytes', b64(new Uint8Array(15))],
+    ['salt', '17 bytes', b64(new Uint8Array(17))],
+    ['iv', 'empty', b64(new Uint8Array(0))],
+    ['iv', '11 bytes', b64(new Uint8Array(11))],
+    ['iv', '13 bytes', b64(new Uint8Array(13))],
+    ['ciphertext', 'empty', b64(new Uint8Array(0))],
+    ['ciphertext', '47 bytes', b64(new Uint8Array(47))],
+    ['ciphertext', '49 bytes', b64(new Uint8Array(49))],
+  ] as const)(
+    'rejects %s with %s',
+    async (field, _label, value) => {
+      const { blob, publicKey } = await validBlob()
+
+      await expect(
+        unwrapSecretKey(
+          { ...blob, [field]: value } as WrappedKey,
+          publicKey,
+          'bounds-password-123',
+        ),
+      ).rejects.toBeInstanceOf(InvalidInputError)
+    },
+  )
+
+  it('validates every bound before running PBKDF2', async () => {
+    const { blob, publicKey } = await validBlob()
+    const deriveBits = vi.spyOn(globalThis.crypto.subtle, 'deriveBits')
+
+    try {
+      await expect(
+        unwrapSecretKey(
+          {
+            ...blob,
+            iterations: 10_000_001,
+            salt: b64(new Uint8Array(15)),
+            iv: b64(new Uint8Array(13)),
+            ciphertext: b64(new Uint8Array(49)),
+          } as WrappedKey,
+          publicKey,
+          'bounds-password-123',
+        ),
+      ).rejects.toBeInstanceOf(InvalidInputError)
+
+      expect(deriveBits).not.toHaveBeenCalled()
+    } finally {
+      deriveBits.mockRestore()
+    }
   })
 })
 

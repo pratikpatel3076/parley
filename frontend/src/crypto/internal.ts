@@ -7,7 +7,7 @@
 import { InvalidInputError } from './errors'
 import { sodium } from './sodium'
 
-const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/
 const BASE64_ALPHABET =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
@@ -72,8 +72,15 @@ export function toBase64(bytes: Uint8Array): string {
 
 /** Strict standard padded base64 decode. */
 export function fromBase64(value: string, field: string): Bytes {
-  if (typeof value !== 'string' || value.length === 0 || !BASE64.test(value)) {
+  if (typeof value !== 'string' || !BASE64.test(value)) {
     throw new InvalidInputError(`${field} must be standard base64`)
+  }
+  // Every non-empty encoding is a whole number of four-character quanta.
+  if (value.length > 0 && value.length % 4 !== 0) {
+    throw new InvalidInputError(`${field} must use padded base64`)
+  }
+  if (value.length === 0) {
+    return asBytes(new Uint8Array(0))
   }
   let bytes: Bytes
   try {

@@ -48,6 +48,12 @@ export interface WrapOptions {
   iterations?: number
 }
 
+/** Maximum PBKDF2 iteration count accepted when unlocking a stored blob. */
+const MAX_WRAP_ITERATIONS = 10_000_000
+
+/** 32-byte secret key plus the 16-byte AES-GCM tag. */
+const WRAPPED_CIPHERTEXT_BYTES = KEY_BYTES + 16
+
 /** Generate a fresh crypto_box keypair, returned as standard base64. */
 export async function generateIdentity(): Promise<Identity> {
   await ready()
@@ -234,14 +240,33 @@ function validateWrappedKey(blob: WrappedKey): void {
   if (blob.kdf !== KDF_PBKDF2_SHA256) {
     throw new InvalidInputError('unsupported wrapped key KDF')
   }
-  requirePositiveInteger(blob.iterations, 'iterations')
-  if (typeof blob.salt !== 'string') {
-    throw new InvalidInputError('salt must be a string')
+  if (
+    typeof blob.iterations !== 'number' ||
+    !Number.isInteger(blob.iterations) ||
+    blob.iterations < 1 ||
+    blob.iterations > MAX_WRAP_ITERATIONS
+  ) {
+    throw new InvalidInputError(
+      `iterations must be an integer between 1 and ${MAX_WRAP_ITERATIONS}`,
+    )
   }
-  if (typeof blob.iv !== 'string') {
-    throw new InvalidInputError('iv must be a string')
+  validateFixedBase64(blob.salt, 'salt', SALT_BYTES)
+  validateFixedBase64(blob.iv, 'iv', IV_BYTES)
+  validateFixedBase64(
+    blob.ciphertext,
+    'ciphertext',
+    WRAPPED_CIPHERTEXT_BYTES,
+  )
+}
+
+function validateFixedBase64(
+  value: unknown,
+  field: string,
+  length: number,
+): void {
+  if (typeof value !== 'string') {
+    throw new InvalidInputError(`${field} must be a string`)
   }
-  if (typeof blob.ciphertext !== 'string') {
-    throw new InvalidInputError('ciphertext must be a string')
-  }
+  const bytes = fixedBytes(value, field, length)
+  zero(bytes)
 }

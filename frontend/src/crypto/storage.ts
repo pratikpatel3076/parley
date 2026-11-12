@@ -41,27 +41,38 @@ function openDatabase(): Promise<IDBDatabase> {
   }
 
   databasePromise = new Promise<IDBDatabase>((resolve, reject) => {
-    if (typeof indexedDB === 'undefined') {
-      reject(new StorageError('IndexedDB is not available'))
-      return
-    }
+    try {
+      if (typeof indexedDB === 'undefined') {
+        reject(new StorageError('IndexedDB is not available'))
+        return
+      }
 
-    const request = indexedDB.open(DB_NAME, DB_VERSION)
-    request.onupgradeneeded = () => {
-      const db = request.result
-      if (!db.objectStoreNames.contains(IDENTITY_STORE)) {
-        db.createObjectStore(IDENTITY_STORE, { keyPath: 'username' })
+      const request = indexedDB.open(DB_NAME, DB_VERSION)
+      request.onupgradeneeded = () => {
+        const db = request.result
+        if (!db.objectStoreNames.contains(IDENTITY_STORE)) {
+          db.createObjectStore(IDENTITY_STORE, { keyPath: 'username' })
+        }
+        if (!db.objectStoreNames.contains(CONTACT_STORE)) {
+          // Out-of-line keys: owner + ":" + contact.
+          db.createObjectStore(CONTACT_STORE)
+        }
       }
-      if (!db.objectStoreNames.contains(CONTACT_STORE)) {
-        // Out-of-line keys: owner + ":" + contact.
-        db.createObjectStore(CONTACT_STORE)
-      }
-    }
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () =>
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () =>
+        reject(new StorageError('Could not open the parley database'))
+      request.onblocked = () =>
+        reject(new StorageError('The parley database upgrade was blocked'))
+    } catch {
       reject(new StorageError('Could not open the parley database'))
-    request.onblocked = () =>
-      reject(new StorageError('The parley database upgrade was blocked'))
+    }
+  }).catch((error: unknown) => {
+    // Never surface a raw DOMException or engine error to callers.
+    databasePromise = null
+    if (error instanceof StorageError) {
+      throw error
+    }
+    throw new StorageError('Could not open the parley database')
   })
 
   return databasePromise
@@ -73,16 +84,20 @@ async function read<T>(
 ): Promise<T | undefined> {
   const db = await openDatabase()
   return new Promise<T | undefined>((resolve, reject) => {
-    const transaction = db.transaction(storeName, 'readonly')
-    const request = transaction.objectStore(storeName).get(key)
-    let value: T | undefined
-    request.onsuccess = () => {
-      value = request.result as T | undefined
+    try {
+      const transaction = db.transaction(storeName, 'readonly')
+      const request = transaction.objectStore(storeName).get(key)
+      let value: T | undefined
+      request.onsuccess = () => {
+        value = request.result as T | undefined
+      }
+      request.onerror = () => reject(new StorageError('Read failed'))
+      transaction.oncomplete = () => resolve(value)
+      transaction.onerror = () => reject(new StorageError('Read failed'))
+      transaction.onabort = () => reject(new StorageError('Read aborted'))
+    } catch {
+      reject(new StorageError('Read failed'))
     }
-    request.onerror = () => reject(new StorageError('Read failed'))
-    transaction.oncomplete = () => resolve(value)
-    transaction.onerror = () => reject(new StorageError('Read failed'))
-    transaction.onabort = () => reject(new StorageError('Read aborted'))
   })
 }
 
@@ -93,27 +108,35 @@ async function write(
 ): Promise<void> {
   const db = await openDatabase()
   return new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(storeName, 'readwrite')
-    const store = transaction.objectStore(storeName)
-    if (key === undefined) {
-      store.put(value)
-    } else {
-      store.put(value, key)
+    try {
+      const transaction = db.transaction(storeName, 'readwrite')
+      const store = transaction.objectStore(storeName)
+      if (key === undefined) {
+        store.put(value)
+      } else {
+        store.put(value, key)
+      }
+      transaction.oncomplete = () => resolve()
+      transaction.onerror = () => reject(new StorageError('Write failed'))
+      transaction.onabort = () => reject(new StorageError('Write aborted'))
+    } catch {
+      reject(new StorageError('Write failed'))
     }
-    transaction.oncomplete = () => resolve()
-    transaction.onerror = () => reject(new StorageError('Write failed'))
-    transaction.onabort = () => reject(new StorageError('Write aborted'))
   })
 }
 
 async function remove(storeName: string, key: IDBValidKey): Promise<void> {
   const db = await openDatabase()
   return new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(storeName, 'readwrite')
-    transaction.objectStore(storeName).delete(key)
-    transaction.oncomplete = () => resolve()
-    transaction.onerror = () => reject(new StorageError('Delete failed'))
-    transaction.onabort = () => reject(new StorageError('Delete aborted'))
+    try {
+      const transaction = db.transaction(storeName, 'readwrite')
+      transaction.objectStore(storeName).delete(key)
+      transaction.oncomplete = () => resolve()
+      transaction.onerror = () => reject(new StorageError('Delete failed'))
+      transaction.onabort = () => reject(new StorageError('Delete aborted'))
+    } catch {
+      reject(new StorageError('Delete failed'))
+    }
   })
 }
 

@@ -27,9 +27,25 @@ server that serves modified client code. See section 14.
 
 ## 2. Cryptographic primitives
 
-All binary values in JSON are standard base64 (RFC 4648 section 4, with
-padding). The server treats `nonce` and `ciphertext` as opaque bytes and never
-decrypts them.
+All binary values in JSON use standard base64: the RFC 4648 section 4 alphabet
+(`A-Z`, `a-z`, `0-9`, `+`, `/`) with mandatory `=` padding. A decoder must be
+strict:
+
+- Accept only the 64 standard alphabet characters and `=` padding.
+- Reject whitespace (spaces, tabs, newlines), the URL-safe alphabet (`-`, `_`),
+  missing padding, extra padding, characters outside the alphabet, and any
+  length that is not a whole number of four-character groups.
+- Reject non-canonical trailing bits (for example `TR==` for the one-byte value
+  `4d`, or `TWF=` for the two-byte value `4d 61`). The reliable test is to
+  decode, then re-encode, and require the result to equal the input text
+  byte-for-byte.
+- The empty string is the canonical encoding of zero bytes. Callers that need a
+  fixed length still reject it after decoding.
+
+This matches the backend's `decode_canonical_base64` helper, which calls
+`base64.b64decode(value, validate=True)` and then requires
+`base64.b64encode(raw).decode("ascii") == value`. The server treats `nonce` and
+`ciphertext` as opaque bytes and never decrypts them.
 
 | Purpose | Primitive | Implementation |
 |---|---|---|
@@ -186,6 +202,22 @@ The only persisted copy of the private key is this IndexedDB record, in database
 GCM tag. The AAD is `UTF-8("parley/wrap/v1") || publicKey`, which binds the
 blob to that identity's public key. The random `salt` is combined with the
 `"parley/wrap/v1:"` label to form the PBKDF2 salt.
+
+Before deriving a key or running PBKDF2, the client validates the stored blob
+and rejects it with `InvalidInputError` when any of these bounds fails:
+
+| Field | Required value |
+|---|---|
+| `v` | exactly `1` |
+| `kdf` | exactly `"pbkdf2-sha256"` |
+| `iterations` | an integer in `[1, 10_000_000]` |
+| `salt` | canonical base64 decoding to exactly 16 bytes |
+| `iv` | canonical base64 decoding to exactly 12 bytes |
+| `ciphertext` | canonical base64 decoding to exactly 48 bytes |
+
+All six checks run before the KDF, so a corrupted or hostile blob cannot force
+millions of PBKDF2 iterations before being rejected. Unsupported versions or
+KDF identifiers are rejected for the same reason; they are never guessed at.
 
 Unlock steps:
 
@@ -754,8 +786,11 @@ Operational requirements:
 - `recipient`: a valid existing username, not the sender.
 - Plaintext: the client should reject an encoded plaintext larger than 64 KiB
   before encrypting.
-- Base64: standard alphabet with padding; reject non-canonical encodings where
-  practical.
+- Base64: standard alphabet (`A-Z`, `a-z`, `0-9`, `+`, `/`) with mandatory `=`
+  padding. Reject whitespace, the URL-safe alphabet, missing or extra padding,
+  and non-canonical trailing bits. Decode then re-encode and require the text
+  to match; the empty string is the canonical encoding of zero bytes. This is
+  the same rule as section 2 and the backend's `decode_canonical_base64`.
 - The server must not attempt to interpret, decompress, re-encrypt, or scan the
   ciphertext.
 
