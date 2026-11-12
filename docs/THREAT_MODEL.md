@@ -112,8 +112,15 @@ Everything else is explicitly out of scope or a known limitation.
     user (`EnvelopeMismatchError`).
   - Clients should require explicit user acknowledgement before accepting a new
     key.
+  - Inbox rows are acknowledged only after they decrypt and are stored. Error
+    rows (decryption failure, envelope mismatch, invalid input) and rows from a
+    blocked peer are never acknowledged, so a later re-sync can process them
+    after the user accepts a changed key.
 - **Can still do:** drop, delay, duplicate, or reorder whole ciphertexts; replay
-  an old ciphertext in the same conversation; cause denials of service.
+  an old ciphertext in the same conversation; cause denials of service. The
+  client deduplicates by direction and `client_message_id`, so a replay that
+  keeps its original id is suppressed only if that row is already displayed;
+  an old row not seen before can still appear as a valid old message.
 - **Hard limit:** if the server serves modified JavaScript, all client-side
   guarantees are void. There is no reproducible-build, code-signing, or
   transparency-log verification in this design. This is not a defense against a
@@ -318,6 +325,11 @@ safe. A strong, unique password remains part of the security contract.
   concerns. The MVP deduplicates by message id and tolerates reordering, but it
   does not claim exactly-once delivery. Send retries are idempotent only when
   the client reuses the same `client_message_id` with an identical payload.
+- Cursors are in memory only. The client never overwrites a stored non-null
+  cursor with `null`, and the server echoes the supplied cursor on an empty
+  page. This stops a poll at the end of history from re-reading the whole
+  conversation and re-acknowledging rows. It is not a delivery guarantee: a
+  malicious server can still replay, drop, or reorder rows.
 - A malicious server can drop, delay, duplicate, or reorder whole ciphertexts.
   The client detects replays and id swaps only when the authenticated envelope
   `id` disagrees with the row's `client_message_id`; a replayed ciphertext that
@@ -335,7 +347,12 @@ safe. A strong, unique password remains part of the security contract.
   implement; until then every client behind such a proxy could appear to share
   one bucket and one client could exhaust it for others.
 - The safety number proves both parties see the same two public keys; it does
-  not prove the keys belong to the humans the usernames suggest.
+  not prove the keys belong to the humans the usernames suggest. Verification is
+  a local boolean on the pinned contact record. The verification panel computes
+  the number from the pinned key, never from the key the server presents on that
+  request. Accepting a changed key resets `verified` to false. The badge is not a
+  server-side claim, is not synced to another device, and is only as trustworthy
+  as the device and the out-of-band comparison the user actually performed.
 - There is no local message cache. Decrypted history lives in memory only, is
   cleared on lock/logout, and is re-fetched and re-decrypted after a reload. The
   server therefore sees repeated history reads, and a client that closes

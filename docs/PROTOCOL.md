@@ -5,11 +5,11 @@ Status: the backend MVP implements the server side of sections 3.2, 5, 6.1,
 implements the client crypto layer in `frontend/src/crypto/`, the register,
 login, and logout flows (sections 3.1, 4, 6, 7, and 8.1 for authentication), and
 the 1:1 messaging client: typed API calls, polling, decryption, deduplication,
-retry-safe sending, key-change blocking, and the chat UI in
-`frontend/src/messaging/` and `frontend/src/components/chat/`. There is no local
-message cache; decrypted history lives in memory only and is cleared on lock or
-logout. This document is the contract the implementation must satisfy. Security
-claims and limits are in [THREAT_MODEL.md](THREAT_MODEL.md).
+retry-safe sending, key-change blocking, safety-number verification, and the chat
+UI in `frontend/src/messaging/` and `frontend/src/components/chat/`. There is no
+local message cache; decrypted history lives in memory only and is cleared on
+lock or logout. This document is the contract the implementation must satisfy.
+Security claims and limits are in [THREAT_MODEL.md](THREAT_MODEL.md).
 
 Protocol version: `1`.
 
@@ -447,9 +447,15 @@ public keys:
    ```
    12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67890
    ```
-6. Both parties compute the same string because the keys are sorted. Display it
-   in the contact view and require an explicit "mark as verified" action after
-   the user compares it out of band.
+6. Both parties compute the same string because the keys are sorted. The
+   verification panel displays it as 3 rows of 4 groups in monospace, using the
+   key pinned in the local contact record, never the key the server presents on
+   that request. The user must compare it out of band (in person or over a call
+   where they recognise the voice, not through Parley or another channel the
+   server controls) and tick the explicit acknowledgement before **Mark as
+   verified** is enabled. Verification is a local flag on the pinned contact; it
+   is not sent to the server and is not synced to another device. Accepting a
+   changed key resets it to false.
 
 The modulo reduction introduces a small bias (2^32 is not a multiple of 10^5);
 the safety number is a comparison value, not a secret or a key. It is safe to
