@@ -1,5 +1,7 @@
 # Parley
 
+[![CI](https://github.com/pratikpatel3076/parley/actions/workflows/ci.yml/badge.svg)](https://github.com/pratikpatel3076/parley/actions/workflows/ci.yml)
+
 Parley is a 1:1 end-to-end encrypted messenger built as a portfolio project. The
 goal is honest engineering judgment: a small system with a protocol that is
 specified, a threat model that says what it does not protect, and code that
