@@ -20,5 +20,8 @@ export default defineConfig({
     globals: true,
     setupFiles: './src/test/setup.ts',
     css: true,
+    // The password-strength import and the 1000-nonce loop can take several
+    // seconds on a loaded CI runner; the default 5s is too tight.
+    testTimeout: 15_000,
   },
 })

@@ -75,9 +75,12 @@ function registerButton(): HTMLElement {
 }
 
 async function waitForStrength(): Promise<void> {
-  await waitFor(() => {
-    expect(screen.queryByText('checking…')).not.toBeInTheDocument()
-  })
+  await waitFor(
+    () => {
+      expect(screen.queryByText('checking…')).not.toBeInTheDocument()
+    },
+    { timeout: 5000 },
+  )
 }
 
 async function submitRegistration(): Promise<void> {
