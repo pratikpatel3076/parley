@@ -16,6 +16,7 @@ jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: backend
@@ -40,6 +41,7 @@ jobs:
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: frontend

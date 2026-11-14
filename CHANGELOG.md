@@ -62,6 +62,8 @@ All notable changes to Parley are documented here. Format follows
   walkthrough, the test commands, and an honest limitations/roadmap list.
 - `docs/PROTOCOL.md` and `docs/THREAT_MODEL.md` describe the acknowledgement
   policy, cursor stability, and the local semantics of verification.
+- CI jobs have a 15-minute timeout, and Dependabot checks the pinned GitHub
+  Actions, backend Python dependencies, and frontend npm dependencies weekly.
 
 ### Fixed
 
