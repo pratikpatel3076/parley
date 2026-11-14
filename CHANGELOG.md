@@ -39,6 +39,9 @@ All notable changes to Parley are documented here. Format follows
   pinned contact key, both usernames, plain instructions, a required
   acknowledgement checkbox, mark/remove actions, and a persisted
   Verified/Unverified header badge.
+- `docs/SECURITY_FINDINGS.md`, a factual log of weaknesses found and fixed
+  during development, with commit hashes, test names, and known unresolved
+  limits.
 - Development-only `backend/scripts/simulate_key_swap.py` to replace and restore
   a user's stored public key, with pytest coverage, so the key-change path can
   be exercised without a second account.

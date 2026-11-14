@@ -271,13 +271,17 @@ parley/
   model, and polling transport.
 - [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — assets, adversaries, what the
   server can and cannot see, trust assumptions, and non-goals.
+- [docs/SECURITY_FINDINGS.md](docs/SECURITY_FINDINGS.md) — the weaknesses found
+  and fixed during development, with commits and tests, plus the known
+  unresolved limits.
 
 ## Security
 
 Parley is experimental and unaudited. Report vulnerabilities through the
 private flow described in [SECURITY.md](SECURITY.md); do not open a public issue
 for a vulnerability. The known limits are in
-[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), and the fixed findings are in
+[docs/SECURITY_FINDINGS.md](docs/SECURITY_FINDINGS.md).
 
 ## License
 
