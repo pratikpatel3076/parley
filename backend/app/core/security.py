@@ -9,14 +9,12 @@ import jwt
 
 from app.core.config import settings
 
-BCRYPT_ROUNDS = 12
-
 # A fixed-format input hashed at import time. Login uses it when the username is
 # unknown so that path performs the same bcrypt work as a real wrong secret.
 _DUMMY_AUTH_TEXT = base64.b64encode(b"\x00" * 32).decode("ascii")
 _DUMMY_AUTH_HASH = bcrypt.hashpw(
     _DUMMY_AUTH_TEXT.encode("ascii"),
-    bcrypt.gensalt(rounds=BCRYPT_ROUNDS),
+    bcrypt.gensalt(rounds=settings.BCRYPT_ROUNDS),
 ).decode("ascii")
 
 
@@ -30,7 +28,7 @@ def hash_auth_secret(auth_secret_b64: str) -> str:
     encoded = auth_secret_b64.encode("ascii")
     return bcrypt.hashpw(
         encoded,
-        bcrypt.gensalt(rounds=BCRYPT_ROUNDS),
+        bcrypt.gensalt(rounds=settings.BCRYPT_ROUNDS),
     ).decode("ascii")
 
 

@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings
+from app.core.config import PRODUCTION_BCRYPT_ROUNDS, Settings
 
 
 def _settings_with_origins(
@@ -269,3 +269,83 @@ def test_settings_accept_reuse_grace_in_range(
     settings = Settings(_env_file=None)
 
     assert settings.REFRESH_REUSE_GRACE_SECONDS == expected
+
+
+def _settings_with_bcrypt_env(
+    monkeypatch,
+    *,
+    app_env: str | None,
+    rounds: str | None,
+) -> Settings:
+    monkeypatch.setenv("SECRET_KEY", "test-" + "x" * 48)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
+    monkeypatch.setenv("DEBUG", "False")
+    monkeypatch.setenv("COOKIE_SECURE", "True")
+    if app_env is None:
+        monkeypatch.delenv("APP_ENV", raising=False)
+    else:
+        monkeypatch.setenv("APP_ENV", app_env)
+    if rounds is None:
+        monkeypatch.delenv("BCRYPT_ROUNDS", raising=False)
+    else:
+        monkeypatch.setenv("BCRYPT_ROUNDS", rounds)
+    return Settings(_env_file=None)
+
+
+def test_bcrypt_rounds_default_to_the_production_cost(monkeypatch) -> None:
+    settings = _settings_with_bcrypt_env(monkeypatch, app_env=None, rounds=None)
+
+    assert settings.BCRYPT_ROUNDS == PRODUCTION_BCRYPT_ROUNDS == 12
+    assert settings.APP_ENV == "production"
+
+
+def test_settings_refuse_reduced_bcrypt_rounds_outside_test_profile(
+    monkeypatch,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _settings_with_bcrypt_env(monkeypatch, app_env="production", rounds="4")
+
+    message = str(exc_info.value)
+    assert "BCRYPT_ROUNDS=4" in message
+    assert "production cost of 12" in message
+    assert "APP_ENV=test" in message
+
+
+def test_settings_accept_reduced_bcrypt_rounds_in_test_profile(monkeypatch) -> None:
+    settings = _settings_with_bcrypt_env(monkeypatch, app_env="test", rounds="4")
+
+    assert settings.BCRYPT_ROUNDS == 4
+    assert settings.APP_ENV == "test"
+
+
+@pytest.mark.parametrize("app_env", ["staging", "development", "TEST", ""])
+def test_settings_reject_unknown_app_env(monkeypatch, app_env: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _settings_with_bcrypt_env(monkeypatch, app_env=app_env, rounds="4")
+
+    assert "APP_ENV must be production or test" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("rounds", ["3", "32"])
+def test_settings_reject_out_of_range_bcrypt_rounds(
+    monkeypatch, rounds: str
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _settings_with_bcrypt_env(monkeypatch, app_env="test", rounds=rounds)
+
+    assert "BCRYPT_ROUNDS must be between 4 and 31" in str(exc_info.value)
+
+
+def test_dummy_auth_hash_uses_the_same_rounds_as_real_hashes() -> None:
+    import base64
+
+    from app.core.config import settings
+    from app.core.security import dummy_auth_hash, hash_auth_secret
+
+    def cost(auth_hash: str) -> int:
+        return int(auth_hash.split("$")[2])
+
+    auth_secret = base64.b64encode(b"\x11" * 32).decode("ascii")
+    real_hash = hash_auth_secret(auth_secret)
+
+    assert cost(dummy_auth_hash()) == cost(real_hash) == settings.BCRYPT_ROUNDS

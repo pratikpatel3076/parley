@@ -10,6 +10,10 @@ TEST_ORIGIN = "https://testserver"
 # variables take precedence over .env, so tests never depend on a local file.
 os.environ["SECRET_KEY"] = "test-" + "x" * 48
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB.as_posix()}"
+# The explicit test profile is the only place a reduced bcrypt cost is allowed.
+# It keeps the login-path tests from paying the production cost each run.
+os.environ["APP_ENV"] = "test"
+os.environ["BCRYPT_ROUNDS"] = "4"
 os.environ["DEBUG"] = "False"
 os.environ["COOKIE_SECURE"] = "True"
 os.environ["ALLOWED_ORIGINS"] = '["https://testserver"]'

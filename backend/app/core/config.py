@@ -4,6 +4,10 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# The bcrypt cost production must use. Tests may lower it, but only while the
+# explicit test profile is active; see validate_security_settings.
+PRODUCTION_BCRYPT_ROUNDS = 12
+
 
 class Settings(BaseSettings):
     """Application configuration loaded from environment variables and .env.
@@ -21,9 +25,15 @@ class Settings(BaseSettings):
     )
 
     APP_NAME: str = "Parley"
+    APP_ENV: str = "production"
     DEBUG: bool = False
     SECRET_KEY: str
     DATABASE_URL: str
+
+    # bcrypt work factor for auth-secret hashes and the unknown-user dummy
+    # hash. Lower values are accepted only under APP_ENV=test so the suite does
+    # not pay the production cost on every login test.
+    BCRYPT_ROUNDS: int = PRODUCTION_BCRYPT_ROUNDS
 
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
@@ -69,6 +79,23 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL must be a non-empty connection string.")
         return value
 
+    @field_validator("APP_ENV")
+    @classmethod
+    def validate_app_env(cls, value: str) -> str:
+        if value not in {"production", "test"}:
+            raise ValueError(
+                "APP_ENV must be production or test. The test profile is the "
+                "only place where a reduced BCRYPT_ROUNDS is accepted."
+            )
+        return value
+
+    @field_validator("BCRYPT_ROUNDS")
+    @classmethod
+    def validate_bcrypt_rounds(cls, value: int) -> int:
+        if not 4 <= value <= 31:
+            raise ValueError("BCRYPT_ROUNDS must be between 4 and 31.")
+        return value
+
     @field_validator("ALGORITHM")
     @classmethod
     def validate_algorithm(cls, value: str) -> str:
@@ -103,6 +130,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security_settings(self) -> "Settings":
+        if (
+            self.BCRYPT_ROUNDS < PRODUCTION_BCRYPT_ROUNDS
+            and self.APP_ENV != "test"
+        ):
+            raise ValueError(
+                f"BCRYPT_ROUNDS={self.BCRYPT_ROUNDS} is below the production "
+                f"cost of {PRODUCTION_BCRYPT_ROUNDS}. A reduced cost is "
+                "accepted only when APP_ENV=test."
+            )
         if not self.DEBUG and not self.COOKIE_SECURE:
             raise ValueError(
                 "COOKIE_SECURE may be disabled only when DEBUG=True. "
