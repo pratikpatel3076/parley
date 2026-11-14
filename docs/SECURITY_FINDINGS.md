@@ -3,11 +3,19 @@
 This is a factual record of weaknesses found and fixed while building Parley. It
 is not a third-party audit. Each entry states what was wrong, how it was found,
 the fix, the commit, and the tests that pin the behavior. Commit hashes were
-checked with `git show --stat <hash>` against this repository.
+checked with `git show --stat <hash>` against this repository; test names were
+checked with `pytest --collect-only` and against the frontend test files.
 
 The protocol and its limits are in [PROTOCOL.md](PROTOCOL.md) and
 [THREAT_MODEL.md](THREAT_MODEL.md). The Jotter comparison is in
 [FROM_JOTTER.md](FROM_JOTTER.md). The unresolved limits are listed at the end.
+
+## How this log was produced
+
+The findings came from iterative review of the code and of tool reports during
+development, with AI assistance for review and for implementation. Each fix was
+verified by running the tests. The commit and test references below were checked
+against this repository. This is a self-review, not an audit.
 
 ---
 
@@ -21,7 +29,7 @@ decrypt synced notes. The zero-knowledge claim depended on the server choosing
 not to use data it had already received. See `docs/FROM_JOTTER.md`, "Verdict:
 yes, the server receives the raw password".
 
-**How it was found.** Read-only code review and trace of the Jotter frontend and
+**How it was found.** Identified in code review of the Jotter frontend and
 backend, recorded in `docs/FROM_JOTTER.md`. The signup/login payloads, the
 server-side storage of `encrypted_master_key` and `kdf_salt`, and the reset flow
 were traced to their call sites.
@@ -51,14 +59,14 @@ the residual-risk wording was corrected in `bc9688a`.
 
 ---
 
-## 2. PBKDF2 iteration count: 310,000 to 600,000
+## 2. PBKDF2 iteration count: correcting the documented 310,000 to the implemented 600,000
 
-**What was wrong.** The initial design material carried Jotter's 310,000
-PBKDF2-HMAC-SHA-256 iterations. That was below the current OWASP guidance of
-600,000 for PBKDF2-HMAC-SHA-256 and made offline guessing cheaper.
+**What was wrong.** The protocol text added in `7cb235e` carried 310,000
+PBKDF2-HMAC-SHA-256 iterations, while the crypto implementation in `9d9a2f1`
+used 600,000. The documents and the implementation disagreed.
 
-**How it was found.** Code and document review against the OWASP Password
-Storage Cheat Sheet while specifying the KDF table.
+**How it was found.** Identified in code and document review by comparing the
+KDF table in `docs/PROTOCOL.md` with `frontend/src/crypto/constants.ts`.
 
 **Fix.** Both `wrapKey` and `authSecret` use 600,000 iterations. The protocol
 table, the derivation pseudocode, the threat model, and the Jotter comparison
@@ -83,9 +91,9 @@ the username is enough to test password guesses offline. Recovering
 `authSecret` lets an attacker authenticate as the user. It does **not** decrypt
 messages, which additionally requires the device-only wrapped-key record.
 
-**How it was found.** Review of the threat model against the actual derivation
-inputs in `frontend/src/crypto/derive.ts` and the server storage in
-`backend/app/api/routes/auth.py`.
+**How it was found.** Identified in code and document review of the threat model
+against the actual derivation inputs in `frontend/src/crypto/derive.ts` and the
+server storage in `backend/app/api/routes/auth.py`.
 
 **Fix.** `docs/THREAT_MODEL.md`, `docs/FROM_JOTTER.md`, `docs/PROTOCOL.md`, and
 the README now state the boundary precisely: server-database compromise permits
@@ -112,9 +120,9 @@ reflect a message back to its sender or redirect it to a third party. The
 client could decrypt it because the box key pair still matched, and the inner id
 alone did not prove who the sender or intended recipient was.
 
-**How it was found.** Protocol review of the envelope shape and a trace of the
-`sender secret + recipient public` / `recipient secret + sender public` symmetry
-in `crypto_box_easy` and `crypto_box_open_easy`.
+**How it was found.** Identified in code review of the envelope shape, with a
+trace of the `sender secret + recipient public` / `recipient secret + sender
+public` symmetry in `crypto_box_easy` and `crypto_box_open_easy`.
 
 **Fix.** The envelope now carries `from` and `to` (the sender and recipient
 32-byte public keys). After decryption the client requires both to match the
@@ -151,9 +159,9 @@ reflected ciphertext`.
    unrevoked row and both mint replacement sessions, so the single-use property
    was not enforced atomically.
 
-**How it was found.** Trace of the refresh endpoint against the session table,
-and a concurrency test with two independent clients. The logout-replay case was
-found by replaying a logged-out token while a second session was live.
+**How it was found.** Identified in code review of the refresh endpoint, the
+session table, and the concurrent-refresh path. The replay and concurrency cases
+are now pinned by the tests below.
 
 **Fix.** Sessions now record `revoked_reason` (`rotated`, `logout`,
 `reuse_detected`, `expired`, `user_deleted`) and `rotated_at`. Only a `rotated`
@@ -199,16 +207,17 @@ response was lost (network error, timeout, 5xx), the client deleted the only
 copy of the private key. The server then held a public key whose private half no
 longer existed, and the account could not be used.
 
-**How it was found.** Trace of the register error paths and a test that made
-`fetch` reject after the request was sent.
+**How it was found.** Identified in code review of the register error paths. The
+behavior is now pinned by tests that make `fetch` reject after the request was
+sent and by tests for the definitive-failure statuses.
 
 **Fix.** The form distinguishes definitive failures (no request sent, or a
 400/409/413/422/429 refusal) from possible success (network error, timeout, 5xx,
 or a failure after a response). It deletes the local key only for definitive
 failures. On possible success it keeps the key and tells the user to try logging
-in. It also refuses to unlock when a 201 reports a different public key or
-username. An explicit local-only "remove this device's key" action was added
-for the case where the user wants to start over.
+in. It also refuses to unlock when the login response reports a different public
+key or a different username. An explicit local-only "remove this device's key"
+action was added for the case where the user wants to start over.
 
 **Commit.** `5ff43a8` (`fix(ui): never delete a local key once the server may
 have created the account`).
@@ -220,30 +229,37 @@ have created the account`).
 `deletes the local identity it created when registration fails`,
 `deletes the local identity after a definitive 422`, and
 `refuses to overwrite an existing local identity`.
+`refuses to unlock when the server reports a different key` pins the login key
+check.
 
 ---
 
-## 7. Acking undecryptable or blocked messages, and ack failure creating an error row
+## 7. Acking messages that were not displayed, and ack failure creating an error row
 
 **What was wrong.** Two bugs in inbox ingestion:
 
-1. The engine acknowledged an inbox row even when decryption failed or the peer
-   key was blocked. Acknowledging removes the row from the server inbox, so a
-   tampered row was lost and a row from a blocked peer could not be re-synced
-   after the user accepted the new key.
+1. The client acknowledged inbox rows it had not displayed. A row whose
+   decryption failed, or whose peer key was blocked, was still acknowledged, so
+   the client reported receipt of messages the user never saw. The current
+   backend does not filter acknowledged rows out of `GET
+   /api/v1/messages/inbox` (`backend/app/api/routes/messages.py`), so the rows
+   remain fetchable after an ack. This was not data loss with the current
+   backend, but any retention policy keyed on acknowledgements would have
+   deleted them.
 2. The acknowledgement call sat inside the same `try` block as decryption and
    storage. If the ack failed after its retries, the `catch` created an error row
    for a message that had already decrypted and was displayed, potentially
    replacing the message.
 
-**How it was found.** Trace of `ingestInbox` and tests that injected tampered
-ciphertext, a blocked peer key, and a failing ack endpoint.
+**How it was found.** Identified in code review of `ingestInbox` and the
+acknowledgement path. The behavior is now pinned by the tests below.
 
 **Fix.** `ingestInbox` sets `stored = true` only after decryption and storage
 succeed, then acknowledges outside the `try`/`catch` and only when `stored` is
-true. Error rows and blocked-peer rows stay unacknowledged so a later sync can
-process them after the user accepts a changed key. A failed ack is queued in
-`pendingAcks` for the next pass and never adds or replaces an error row.
+true. Error rows and blocked-peer rows stay unacknowledged, so a retention
+policy based on acknowledgements would not treat them as delivered. A failed ack
+is queued in `pendingAcks` for the next pass and never adds or replaces an error
+row.
 
 **Commit.** `340c7ec` (`fix(frontend): ack only after a successful decrypt`) and
 `7fa9292` (`fix(frontend): an ack failure must never turn a decrypted message
@@ -257,48 +273,71 @@ in `7fa9292` to assert one message row, no error row, and the queued ack).
 
 ---
 
-## 8. Origin validation hardened to exact matching; missing and null rejected
+## 8a. ALLOWED_ORIGINS validated at startup
 
-**What was wrong.** State-changing requests must be protected against
-cross-site requests. A prefix, suffix, substring, or wildcard comparison would
-accept look-alike origins such as `https://testserver.evil.test`, and a missing
-`Origin` header or the literal `null` must never be treated as allowed. The
-allowlist configuration was also under-validated: uppercase hosts and some
-malformed entries could be accepted at startup.
+**What was wrong.** `ALLOWED_ORIGINS` was checked by a field validator that
+rejected wildcards, paths, queries, fragments, and userinfo, but it accepted
+other malformed or unsafe entries: the literal `null`, uppercase hosts, leading
+or trailing whitespace, invalid ports, and `http://` origins regardless of
+`DEBUG`. Startup therefore accepted values the runtime origin check could never
+match or should never trust.
 
-**How it was found.** Code review of the middleware and the settings validator,
-plus negative tests for missing, `null`, suffix, prefix, different-port, and
-trailing-slash origins.
+**How it was found.** Identified in code review of `backend/app/core/config.py`
+and its tests.
 
-**Fix.** The middleware compares the `Origin` header by exact whole-string
-membership in `ALLOWED_ORIGINS`; missing and `null` are not in the list, so both
-return `403`. Startup validation now requires an exact lowercase
-`scheme://host[:port]` origin, rejects wildcards, the literal `null`,
-whitespace, paths, queries, fragments, userinfo, invalid ports, and `http://`
-outside `DEBUG=True` on localhost/127.0.0.1. GET requests do not require an
-Origin; every state-changing method does.
+**Fix.** `83d8534` moved origin validation into the settings model validator and
+added an explicit `_validate_origin` check: non-empty strings, no surrounding
+whitespace, no wildcard, no literal `null`, exact lowercase `http://` or
+`https://` scheme, canonical `scheme://host[:port]`, a port between 1 and 65535,
+and `http://` only when `DEBUG=True` and the host is `localhost` or `127.0.0.1`.
+The default allowlist also changed from `http://localhost:5173` to
+`https://localhost:5173`.
 
-**Commit.** `62d1334` added the exact-match middleware; `4673ade` (`fix(backend):
-strict Origin validation and idempotent logout`) added the regression tests;
-`83d8534` (`fix(backend): validate ALLOWED_ORIGINS at startup`) hardened the
-allowlist validation.
+**Commit.** `83d8534` (`fix(backend): validate ALLOWED_ORIGINS at startup`).
+
+**Tests.** `backend/tests/test_config.py` (added in `83d8534`):
+`test_settings_reject_malformed_origins`,
+`test_settings_reject_http_origins_outside_debug`,
+`test_settings_accept_http_localhost_in_debug`,
+`test_settings_accept_exact_https_origins`, and
+`test_settings_accept_multiple_mixed_valid_origins`. Earlier tests in the same
+file continue to pin the pre-existing checks:
+`test_settings_reject_wildcard_origin` (from `62d1334`),
+`test_settings_reject_origin_with_a_path` and
+`test_settings_reject_origin_with_trailing_slash` (from `cd69add`).
+
+---
+
+## 8b. Origin check regression tests
+
+**What was wrong.** The exact-match middleware was already correct. `62d1334`
+added `if origin not in settings.ALLOWED_ORIGINS` in `backend/app/main.py`, so a
+missing `Origin` header, the literal `null`, and look-alike origins were
+rejected by construction. The gap was test coverage: the suite did not pin the
+missing-header, `null`, or look-alike cases, so a future change to the
+comparison could regress without a failure.
+
+**How it was found.** Identified in code review of the middleware and the
+existing Origin tests.
+
+**Fix.** `4673ade` added regression tests for exact allowlist matching,
+including missing and `null` origins, prefix and suffix look-alikes, different
+ports, and a trailing slash, plus tests that exact matches are accepted, GET
+requests do not require an Origin, and logout still requires one. No comparison
+logic changed.
+
+**Commit.** `4673ade` (`fix(backend): strict Origin validation and idempotent
+logout`). The middleware itself is from `62d1334`.
 
 **Tests.** `backend/tests/test_auth.py`:
-`test_disallowed_origin_on_post_returns_403`,
 `test_origin_requires_an_exact_allowlist_match` (parametrized with `None`,
 `"null"`, `https://testserver.evil.test`, `https://eviltestserver`,
 `http://testserver`, `https://testserver:8443`, `https://testserver/`, and
 `https://testserver:443`), `test_exact_origin_match_is_accepted`,
-`test_get_requests_do_not_require_an_origin`,
-`test_origin_is_still_required_for_logout`, and
-`test_origin_check_covers_non_auth_state_changes`.
-`backend/tests/test_config.py`:
-`test_settings_reject_wildcard_origin`,
-`test_settings_reject_origin_with_a_path`,
-`test_settings_reject_origin_with_trailing_slash`,
-`test_settings_reject_malformed_origins`,
-`test_settings_reject_http_origins_outside_debug`, and
-`test_settings_accept_http_localhost_in_debug`.
+`test_get_requests_do_not_require_an_origin`, and
+`test_origin_is_still_required_for_logout`. The earlier
+`test_disallowed_origin_on_post_returns_403` and
+`test_origin_check_covers_non_auth_state_changes` came from `62d1334`.
 
 ---
 
@@ -308,8 +347,8 @@ allowlist validation.
 client, and the server had no way to tell a retry from a new message. That could
 create duplicate rows for one logical send.
 
-**How it was found.** Trace of the retry path after a timeout and a review of
-the send endpoint, which had no idempotency key.
+**How it was found.** Identified in code review of the send and retry paths; the
+send endpoint had no idempotency key.
 
 **Fix.** The client generates a UUIDv4 `client_message_id` and reuses the exact
 same nonce and ciphertext for every retry. The server stores
@@ -340,29 +379,31 @@ client_message_id`).
 **What was wrong.** Key pinning is trust on first use. Before the first contact
 there is no pin, so the client fetches the key from the server and pins it. A
 malicious server can substitute a key at that moment. The client cannot detect
-the substitution until the user compares safety numbers out of band. Earlier UI
-also had no explicit verification state, so a pinned key could be mistaken for a
-verified one.
+the substitution until the user compares safety numbers out of band. The crypto
+layer stored a `verified` flag with each pin from `9d9a2f1`
+(`frontend/src/crypto/verify.ts`), but the UI had no way to show or change it,
+so a pinned key could be mistaken for a verified one.
 
-**How it was found.** Protocol review of the pinning flow and the threat model,
-followed by a UI review of how the pinned key and its verification flag were
-presented.
+**How it was found.** Identified in code and UI review of the pinning flow and
+the threat model.
 
-**Fix.** The pin now carries an explicit `verified: false` on first sight. The
-chat header shows `Unverified` until the user opens the verification panel,
-compares the 12-group safety number computed from the **pinned** key (never the
-key the server presents on that request), ticks the acknowledgement, and clicks
-**Mark as verified**. A key change blocks sending and decryption, shows both
-safety numbers, and resets verification when the user accepts the new key.
-Verification is a local flag; it is not sent to the server and is not synced.
+**Fix.** `bfcb147` added the UI. The pin carries an explicit `verified: false`
+on first sight. The chat header shows `Unverified` until the user opens the
+verification panel, compares the 12-group safety number computed from the
+**pinned** key (never the key the server presents on that request), ticks the
+acknowledgement, and clicks **Mark as verified**. A key change blocks sending
+and decryption, shows both safety numbers, and resets verification when the user
+accepts the new key. Verification is a local flag; it is not sent to the server
+and is not synced.
 
 This fix makes the limitation visible and gives the user a way to authenticate
 the key after first contact. It does **not** remove the first-contact risk. TOFU
 is change detection, not authentication.
 
-**Commit.** `bfcb147` (`feat(ui): safety number verification`). The limitation
-is stated in `931e4b6` (`docs: security properties table, demo walkthrough,
-limits`) and in `docs/THREAT_MODEL.md`.
+**Commit.** `9d9a2f1` added the `verified` field to the pin. `bfcb147`
+(`feat(ui): safety number verification`) added the UI and its tests. The
+limitation is stated in `931e4b6` (`docs: security properties table, demo
+walkthrough, limits`) and in `docs/THREAT_MODEL.md`.
 
 **Tests.** `frontend/src/components/Verification.test.tsx`:
 `shows the same number for alice about bob and bob about alice`,
@@ -388,6 +429,15 @@ are also listed in the README and the threat model.
   sends commit out of order, a message with an earlier timestamp can commit after
   a later row was fetched and stay hidden until a reload. The planned fix is a
   commit-ordered sequence number. See `README.md`, "Limitations and roadmap".
+- **Server can drop, delay, or reorder messages.** The client cannot detect a
+  message the server withholds or delivers out of order. Replayed messages are
+  deduplicated by id, but that does not prove delivery completeness. See
+  `docs/THREAT_MODEL.md`.
+- **Username existence is discoverable.** Anyone can learn whether a username is
+  registered. This is accepted and documented in `docs/THREAT_MODEL.md`
+  ("Accepted username enumeration").
+- **No local message cache.** Plaintext messages are not persisted. A reload
+  re-fetches history from the server and decrypts it again.
 - **Trust on first use.** First-contact key substitution by a malicious server
   is possible; safety numbers mitigate it only after out-of-band verification.
   See `docs/THREAT_MODEL.md`, "Residual risks and open questions".

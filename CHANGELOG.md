@@ -74,6 +74,9 @@ All notable changes to Parley are documented here. Format follows
   conversation, causing repeated decryption and acknowledgement work.
 - The production build no longer emits an `INEFFECTIVE_DYNAMIC_IMPORT` warning
   for the crypto layer.
+- `docs/SECURITY_FINDINGS.md` was corrected against the code, tests, and git
+  history: commit attributions, the acknowledgement facts, the split origin
+  entries, and the origin of the `verified` flag.
 
 ### Security
 
