@@ -165,6 +165,27 @@ has its own IndexedDB identity.
    blocks sending, and resets verification. Compare out of band and accept only
    if the new number is expected.
 
+### Simulating a malicious server (development only)
+
+`backend/scripts/simulate_key_swap.py` replaces a user's stored public key with
+a random 32-byte key so the key-change path can be exercised without a second
+account. It saves the original key to a JSON file in the system temp directory
+and refuses to run unless `DEBUG=True` and `APP_ENV` is not `production`. It
+supports SQLite only and requires an explicit `--yes`. Without `--yes` it prints
+the database path, username, storage type, and both keys, then exits without
+writing anything.
+
+```bash
+cd backend
+.venv/Scripts/python scripts/simulate_key_swap.py swap bob --yes   # Windows
+.venv/bin/python scripts/simulate_key_swap.py swap bob --yes       # macOS / Linux
+# switch to the other profile and compare the new safety number
+.venv/Scripts/python scripts/simulate_key_swap.py restore bob --yes
+```
+
+Use `restore` to put the original key back. The script handles both the BLOB
+storage used by the real schema and base64 text storage.
+
 ## Limitations and roadmap
 
 Known limits:
