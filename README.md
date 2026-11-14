@@ -237,7 +237,13 @@ parley/
 - [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — assets, adversaries, what the
   server can and cannot see, trust assumptions, and non-goals.
 
+## Security
+
+Parley is experimental and unaudited. Report vulnerabilities through the
+private flow described in [SECURITY.md](SECURITY.md); do not open a public issue
+for a vulnerability. The known limits are in
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+
 ## License
 
-No license has been chosen yet. This is a portfolio project; do not deploy it
-for sensitive communication.
+Parley is released under the [MIT License](LICENSE).
