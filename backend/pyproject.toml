@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Parley backend scaffold: FastAPI and async SQLAlchemy"
 requires-python = ">=3.13,<3.14"
 dependencies = [
-  "fastapi==0.162.2",
+  "fastapi==0.162.4",
   "starlette==1.10.0",
   "uvicorn[standard]==0.54.0",
   "sqlalchemy[asyncio]==2.1.8",
