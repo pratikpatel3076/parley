@@ -577,14 +577,22 @@ describe('inbox ingestion', () => {
     ]
 
     await harness.engine.start()
-    expect(conversation(harness.peer)?.items[0]).toMatchObject({
+    let items = conversation(harness.peer)?.items ?? []
+    // An ack failure after retries must not add an error row or replace the
+    // decrypted message. The id stays queued for the next pass.
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({
       kind: 'message',
       body: 'delivered',
     })
+    expect(items.some((item) => item.kind === 'error')).toBe(false)
     expect(harness.server.ackCalls).toHaveLength(2)
 
     harness.server.ackQueue = [null]
     await harness.engine.syncNow()
+    items = conversation(harness.peer)?.items ?? []
+    expect(items).toHaveLength(1)
+    expect(items.some((item) => item.kind === 'error')).toBe(false)
     expect(harness.server.ackCalls).toHaveLength(3)
   })
 

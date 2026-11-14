@@ -664,6 +664,7 @@ export class MessageEngine {
       return
     }
 
+    let stored = false
     try {
       const decrypted = await this.deps.decryptReceived({
         nonce: row.nonce,
@@ -684,10 +685,7 @@ export class MessageEngine {
         body: decrypted.plaintext,
         createdAt: row.createdAt,
       })
-      // Acknowledge only after the ciphertext decrypted and the plaintext was
-      // stored. Error rows and blocked-peer rows stay unacked so a later
-      // re-sync can process them after the user accepts a changed key.
-      await this.ackIfNeeded(row)
+      stored = true
     } catch (error) {
       if (!this.isCurrent(generation)) {
         return
@@ -700,6 +698,15 @@ export class MessageEngine {
         reason: reasonFor(error),
         createdAt: row.createdAt,
       })
+    }
+
+    // Acknowledge only after decryption and storage succeeded. The ack is
+    // deliberately outside the try/catch above: a failed ack is queued for the
+    // next pass and must never turn a displayed message into an error row.
+    // Error rows and blocked-peer rows stay unacked so a later re-sync can
+    // process them after the user accepts a changed key.
+    if (stored) {
+      await this.ackIfNeeded(row)
     }
   }
 
