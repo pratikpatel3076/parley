@@ -87,6 +87,9 @@ delete that file, and restart.
 
 ### Frontend
 
+Node.js 24.15.0 is pinned in `frontend/.nvmrc`; use that version (or one that
+satisfies Vite's engine requirement) before installing.
+
 ```bash
 cd frontend
 npm ci
@@ -110,25 +113,28 @@ exact allowlist match, so a mismatched port or host fails with `403`.
 
 ## Testing
 
-Current suites:
-
-- Backend: **151 tests** (`pytest`).
-- Frontend: **169 tests** (`vitest`), including crypto, storage, session,
-  messaging, auth UI, chat UI, and safety-number verification.
+The CI badge at the top of this file reports the latest result for `main`. Run
+the same checks locally:
 
 ```bash
-cd backend && .venv/Scripts/python -m pytest -q   # Windows
-cd backend && .venv/bin/python -m pytest -q       # macOS / Linux
+cd backend
+.venv/Scripts/python -m pytest -q   # Windows
+.venv/bin/python -m pytest -q       # macOS / Linux
 
-cd frontend && npm run typecheck
-cd frontend && npm test
-cd frontend && npm run build
+cd ../frontend
+npm run typecheck
+npm test
+npm run build
 ```
 
-The production build keeps libsodium and the Parley crypto layer in a lazy
-chunk, and the password-strength dictionaries in separate lazy chunks. The entry
-chunk is under 500 kB; the largest lazy chunk is the zxcvbn word list loaded only
-when a password is checked.
+The backend suite covers configuration, authentication and session rotation,
+message storage, ciphertext limits, and Origin validation. The frontend suite
+covers crypto, storage, session, messaging, auth UI, chat UI, and safety-number
+verification.
+
+The production build code-splits libsodium, the Parley crypto layer, and the
+password-strength dictionaries into lazy chunks; `npm run build` prints the
+actual sizes.
 
 ## Demo walkthrough
 
@@ -138,10 +144,10 @@ has its own IndexedDB identity.
 1. **Register two users.** In profile A register `alice`, in profile B register
    `bob`. Both passwords stay local; the server sees only the derived
    authentication secret.
-2. **Chat both ways.** Open `bob` from alice's conversation box, send a message,
-   and open `alice` from bob's side. Polling runs every 5 seconds while the tab is
-   visible. Reload a tab to show that no plaintext is cached: history is
-   re-fetched and decrypted.
+2. **Chat both ways.** In alice's **Open a conversation** box, enter `bob` and
+   click **Open**, then send a message. Do the same on bob's side with `alice`.
+   Polling runs every 5 seconds while the tab is visible. Reload a tab to show
+   that no plaintext is cached: history is re-fetched and decrypted.
 3. **Verify safety numbers.** In alice's header, click **Verify**, read the
    12 groups of 5 digits to bob over a call or in person, and compare. Do the same
    on bob's side; the numbers match. Tick the checkbox and click **Mark as
@@ -151,10 +157,13 @@ has its own IndexedDB identity.
    failed row with a **Retry** button. Start the backend again and click
    **Retry**. The same encrypted payload is sent again, so the server's
    idempotency check cannot create a duplicate.
-5. **Force a key change.** In profile B, clear site data and register the same
-   username again. Profile A sees a key-change banner with the old and new safety
-   numbers, blocks sending, and resets verification. Compare out of band and
-   accept only if the new number is expected.
+5. **Force a key change.** The server rejects re-registering an existing
+   username with `409`, so clearing site data and registering the same name again
+   does not change the key. Replace bob's stored public key in the development
+   database instead (the development-only script in the next section does this).
+   Profile A then sees a key-change banner with the old and new safety numbers,
+   blocks sending, and resets verification. Compare out of band and accept only
+   if the new number is expected.
 
 ## Limitations and roadmap
 
@@ -194,9 +203,9 @@ Roadmap:
 |---|---|
 | Frontend | Vite, React, TypeScript, Tailwind CSS, Zustand |
 | Frontend tests | Vitest, Testing Library, jsdom |
-| Backend | FastAPI, Python 3.11+, SQLAlchemy async |
+| Backend | FastAPI, Python 3.13, SQLAlchemy async |
 | Dev database | SQLite (`sqlite+aiosqlite`) |
-| Backend tests | pytest, httpx TestClient |
+| Backend tests | pytest, httpx2 `TestClient` and `AsyncClient` |
 | Crypto | libsodium-wrappers for messaging; Web Crypto PBKDF2 + AES-256-GCM for private-key wrapping |
 | Transport | REST + polling |
 

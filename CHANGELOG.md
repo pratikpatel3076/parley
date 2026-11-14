@@ -53,7 +53,7 @@ All notable changes to Parley are documented here. Format follows
   the entry chunk. The engine receives crypto functions through `EngineDeps` and
   the existing `cryptoLoader`.
 - README now documents the security-properties table, a two-profile demo
-  walkthrough, current test counts, and an honest limitations/roadmap list.
+  walkthrough, the test commands, and an honest limitations/roadmap list.
 - `docs/PROTOCOL.md` and `docs/THREAT_MODEL.md` describe the acknowledgement
   policy, cursor stability, and the local semantics of verification.
 
