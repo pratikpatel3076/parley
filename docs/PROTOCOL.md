@@ -644,6 +644,13 @@ and for an empty page it echoes the supplied `after` value (or `null` when the
 poll started without one). A client must therefore never move its stored cursor
 backwards, and must not overwrite a stored non-null cursor with `null`.
 
+**Delivery-ordering limitation.** Because the cursor is `(created_at, id)`, a
+row can commit out of order. If two sends commit out of order, a message with an
+earlier timestamp can commit after the recipient has already fetched a later
+one. The stored cursor is then already past the earlier row, so it stays hidden
+until the next full sync (a reload). The planned fix is a commit-ordered sequence
+number as the cursor.
+
 Client behavior:
 
 1. Fetch the sender's key (section 6) and check the pin.
@@ -936,6 +943,12 @@ above. They are explicit because the code must not claim more than it does.
   and never replaces a non-null cursor with `null`. The backend echoes the input
   cursor on an empty page and returns the last item's cursor on a non-empty page,
   so reaching the end does not reset the next poll to the start of history.
+- **Delivery ordering can hide a row until reload.** Pagination uses a
+  `(created_at, id)` cursor. If two sends commit out of order, a message with an
+  earlier timestamp can commit after the recipient has already fetched a later
+  row. The stored cursor is then past the earlier row, so it stays hidden until
+  the next full sync (a reload). The planned fix is a commit-ordered sequence
+  number as the cursor.
 - **Sent history uses the current pin.** The client does not persist the
   recipient public key that was used for each sent message. After a key change is
   acknowledged, older sent rows encrypted to the previous key cannot be

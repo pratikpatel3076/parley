@@ -168,6 +168,10 @@ Known limits:
 - No protection from a malicious app host serving modified JavaScript.
 - Ciphertext sizes leak approximate plaintext sizes.
 - No local message cache; a reload re-fetches and decrypts history.
+- Delivery ordering can hide a message until the next full sync: pagination uses
+  a `(created_at, id)` cursor, so if two sends commit out of order, a message with
+  an earlier timestamp can commit after a later row was already fetched and stays
+  hidden until a reload.
 
 Roadmap:
 
@@ -175,7 +179,8 @@ Roadmap:
 - Argon2id for password derivation.
 - WebSocket delivery with authenticated resume instead of polling.
 - CSP and security headers, SRI with pinned builds, and reproducible builds.
-- CI for backend and frontend checks.
+- A commit-ordered sequence number as the message cursor instead of
+  `(created_at, id)`.
 - A native client to remove the web-delivery caveat.
 - Database migrations instead of `create_all`.
 - Per-user send quotas and abuse controls.
