@@ -59,25 +59,17 @@ the residual-risk wording was corrected in `bc9688a`.
 
 ---
 
-## 2. PBKDF2 iteration count: correcting the documented 310,000 to the implemented 600,000
+## 2. PBKDF2 iteration count: 310,000 in the initial design, 600,000 implemented
 
-**What was wrong.** The protocol text added in `7cb235e` carried 310,000
-PBKDF2-HMAC-SHA-256 iterations, while the crypto implementation in `9d9a2f1`
-used 600,000. The documents and the implementation disagreed.
+**What was wrong.** The initial design documents (`7cb235e`) specified 310,000 PBKDF2-HMAC-SHA-256 iterations, the value Jotter uses. OWASP's Password Storage Cheat Sheet recommends 600,000 for PBKDF2-HMAC-SHA-256, so the specified cost made offline guessing cheaper than current guidance.
 
-**How it was found.** Identified in code and document review by comparing the
-KDF table in `docs/PROTOCOL.md` with `frontend/src/crypto/constants.ts`.
+**How it was found.** Identified in design review, by comparing the KDF cost in `docs/PROTOCOL.md` with current OWASP guidance.
 
-**Fix.** Both `wrapKey` and `authSecret` use 600,000 iterations. The protocol
-table, the derivation pseudocode, the threat model, and the Jotter comparison
-were corrected to match the implementation.
+**Fix.** The documents were changed to 600,000 in `bc9688a`, before any KDF code existed. The implementation uses 600,000 for both `wrapKey` and `authSecret`. The protocol table, the derivation pseudocode, the threat model, and the Jotter comparison state the same value.
 
-**Commit.** `9d9a2f1` implemented 600,000 in
-`frontend/src/crypto/constants.ts`; `bc9688a` (`docs: correct residual risk, KDF
-cost, username rules, Jotter reset finding`) corrected the documents.
+**Commit.** `bc9688a` (documentation); `9d9a2f1` (implementation, `frontend/src/crypto/constants.ts`).
 
-**Tests.** `frontend/src/crypto/crypto.test.ts::uses 600,000 PBKDF2 iterations
-by default`.
+**Tests.** `frontend/src/crypto/crypto.test.ts::uses 600,000 PBKDF2 iterations by default`.
 
 ---
 
@@ -215,8 +207,7 @@ sent and by tests for the definitive-failure statuses.
 400/409/413/422/429 refusal) from possible success (network error, timeout, 5xx,
 or a failure after a response). It deletes the local key only for definitive
 failures. On possible success it keeps the key and tells the user to try logging
-in. It also refuses to unlock when the login response reports a different public
-key or a different username. An explicit local-only "remove this device's key"
+in. The register flow also refuses to unlock when a 201 response reports a different public key or username than the one submitted, and the login flow refuses to unlock when the server reports a different public key than the one held on this device. An explicit local-only "remove this device's key"
 action was added for the case where the user wants to start over.
 
 **Commit.** `5ff43a8` (`fix(ui): never delete a local key once the server may
@@ -228,9 +219,8 @@ have created the account`).
 `keeps the local identity when a 201 reports a different username`,
 `deletes the local identity it created when registration fails`,
 `deletes the local identity after a definitive 422`, and
-`refuses to overwrite an existing local identity`.
-`refuses to unlock when the server reports a different key` pins the login key
-check.
+`refuses to overwrite an existing local identity` pin the register flow.
+`refuses to unlock when the server reports a different key` pins the login check.
 
 ---
 
