@@ -8,22 +8,22 @@ version = "0.1.0"
 description = "Parley backend scaffold: FastAPI and async SQLAlchemy"
 requires-python = ">=3.13,<3.14"
 dependencies = [
-  "fastapi==0.162.2",
+  "fastapi==0.163.2",
   "starlette==1.10.0",
   "uvicorn[standard]==0.54.0",
-  "sqlalchemy[asyncio]==2.1.8",
+  "sqlalchemy[asyncio]==2.1.9",
   "aiosqlite==0.22.1",
   "pydantic==2.14.3",
-  "pydantic-settings==2.16.2",
+  "pydantic-settings==2.16.3",
   "bcrypt==5.0.0",
   "PyJWT==2.15.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "httpx2==2.16.0",
+  "httpx2==2.16.2",
   "pytest==9.2.0",
-  "pytest-asyncio==1.4.1.post1",
+  "pytest-asyncio==1.5.0",
 ]
 
 [tool.setuptools.packages.find]
